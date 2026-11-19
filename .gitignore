@@ -1,0 +1,10 @@
+# модели не коммитим — качаются отдельно
+*.gguf
+gemma-server/models/
+# окружение
+venv/
+__pycache__/
+*.pyc
+# состояние чата / логи
+gemma-server/history.json
+*.log

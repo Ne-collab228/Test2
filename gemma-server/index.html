@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemma 4 E4B — local chat</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e6e9ef; --muted:#9aa3b2; --accent:#7aa2f7; --user:#223049; --bot:#1b2430;
+    --ok:#9ece6a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--text);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;height:100vh}
+  header{padding:12px 16px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{font-size:15px;margin:0;font-weight:600}
+  .badge{font-size:12px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);padding:3px 8px;border-radius:999px}
+  .badge b{color:var(--ok);font-weight:600}
+  #log{flex:1;overflow-y:auto;padding:18px 16px;display:flex;flex-direction:column;gap:14px}
+  .msg{max-width:760px;width:fit-content;padding:11px 14px;border-radius:14px;white-space:pre-wrap;word-wrap:break-word}
+  .user{align-self:flex-end;background:var(--user);border:1px solid #2d3f5e}
+  .bot{align-self:flex-start;background:var(--bot);border:1px solid var(--line)}
+  .role{font-size:11px;color:var(--muted);margin:0 4px 4px;text-transform:uppercase;letter-spacing:.04em}
+  .wrap{display:flex;flex-direction:column;max-width:760px}
+  .wrap.u{align-self:flex-end;align-items:flex-end}
+  .meta{font-size:11px;color:var(--muted);margin:3px 4px 0}
+  footer{padding:12px 16px;background:var(--panel);border-top:1px solid var(--line)}
+  .row{display:flex;gap:10px;max-width:900px;margin:0 auto}
+  textarea{flex:1;resize:none;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:11px 13px;font:inherit;max-height:160px}
+  textarea:focus{outline:none;border-color:var(--accent)}
+  button{background:var(--accent);color:#0b1220;border:0;border-radius:12px;padding:0 18px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  .tools{display:flex;gap:14px;max-width:900px;margin:8px auto 0;font-size:12px;color:var(--muted);align-items:center}
+  .tools label{display:flex;align-items:center;gap:6px}
+  input[type=range]{accent-color:var(--accent)}
+  a.clear{color:var(--muted);cursor:pointer;text-decoration:underline}
+  .cursor::after{content:"▋";color:var(--accent);animation:b 1s steps(2) infinite}
+  @keyframes b{50%{opacity:0}}
+  details.thought{margin:0 0 8px;max-width:760px;background:#14181f;border:1px dashed var(--line);border-radius:10px}
+  details.thought>summary{cursor:pointer;padding:7px 12px;color:var(--muted);font-size:12px;list-style:none}
+  details.thought>summary::-webkit-details-marker{display:none}
+  details.thought>summary::before{content:"🤔 раздумья ";color:#c0a36e}
+  .thought .body{padding:0 12px 10px;color:#8a93a3;font-size:13px;white-space:pre-wrap;border-top:1px solid var(--line);margin-top:2px;padding-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🦙 Gemma 4 E4B</h1>
+  <span class="badge" id="info">загрузка…</span>
+  <span class="badge">последний ответ: <b id="tps">—</b></span>
+  <span style="flex:1"></span>
+  <a class="clear" onclick="clearChat()">очистить</a>
+</header>
+<div id="log"></div>
+<footer>
+  <div class="row">
+    <textarea id="inp" rows="1" placeholder="Напиши сообщение… (Enter — отправить, Shift+Enter — перенос строки)"></textarea>
+    <button id="send" onclick="send()">▶</button>
+  </div>
+  <div class="tools">
+    <label>temp <input type="range" id="temp" min="0" max="1.4" step="0.1" value="0.7" oninput="tv.textContent=this.value"><span id="tv">0.7</span></label>
+    <label>max tokens <input type="number" id="maxtok" value="2048" min="64" max="8192" style="width:70px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:2px 6px"></label>
+    <label><input type="checkbox" id="think" checked> раздумья</label>
+  </div>
+</footer>
+<script>
+const log = document.getElementById('log');
+const inp = document.getElementById('inp');
+const sendBtn = document.getElementById('send');
+let history = [];
+let busy = false;
+
+fetch('/api/info').then(r=>r.json()).then(d=>{
+  document.getElementById('info').innerHTML = `${d.model} · ctx ${d.n_ctx} · ${d.n_threads} потока${d.thinking?' · 🤔 раздумья':''}`;
+}).catch(()=>{});
+
+inp.addEventListener('keydown', e=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+});
+inp.addEventListener('input', ()=>{ inp.style.height='auto'; inp.style.height=Math.min(inp.scrollHeight,160)+'px'; });
+
+function addMsg(role, text){
+  const wrap=document.createElement('div');
+  wrap.className='wrap '+(role==='user'?'u':'');
+  const r=document.createElement('div'); r.className='role'; r.textContent=role==='user'?'ты':'gemma';
+  const m=document.createElement('div'); m.className='msg '+(role==='user'?'user':'bot'); m.textContent=text;
+  wrap.appendChild(r); wrap.appendChild(m);
+  log.appendChild(wrap); log.scrollTop=log.scrollHeight;
+  return {wrap, m};
+}
+
+function clearChat(){ history=[]; log.innerHTML=''; document.getElementById('tps').textContent='—'; }
+
+async function send(){
+  if(busy) return;
+  const text=inp.value.trim();
+  if(!text) return;
+  inp.value=''; inp.style.height='auto';
+  addMsg('user', text);
+  history.push({role:'user', content:text});
+
+  busy=true; sendBtn.disabled=true;
+  const {wrap, m}=addMsg('assistant','');
+  m.classList.add('cursor');
+  const meta=document.createElement('div'); meta.className='meta'; meta.textContent='думает…';
+  wrap.appendChild(meta);
+
+  // блок раздумий (появляется только если модель думает)
+  let thoughtEl=null, thoughtBody=null, thoughtAcc='';
+  function ensureThought(){
+    if(thoughtEl) return;
+    thoughtEl=document.createElement('details'); thoughtEl.className='thought'; thoughtEl.open=true;
+    const s=document.createElement('summary'); s.textContent='';
+    thoughtBody=document.createElement('div'); thoughtBody.className='body';
+    thoughtEl.appendChild(s); thoughtEl.appendChild(thoughtBody);
+    wrap.insertBefore(thoughtEl, m);
+  }
+
+  let acc='';
+  try{
+    const resp=await fetch('/api/chat',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:history, temperature:parseFloat(document.getElementById('temp').value), max_tokens:parseInt(document.getElementById('maxtok').value), think:document.getElementById('think').checked})
+    });
+    const reader=resp.body.getReader();
+    const dec=new TextDecoder();
+    let buf='';
+    while(true){
+      const {value,done}=await reader.read();
+      if(done) break;
+      buf+=dec.decode(value,{stream:true});
+      let idx;
+      while((idx=buf.indexOf('\n\n'))>=0){
+        const line=buf.slice(0,idx).trim(); buf=buf.slice(idx+2);
+        if(!line.startsWith('data:')) continue;
+        const data=JSON.parse(line.slice(5).trim());
+        if(data.think){ ensureThought(); thoughtAcc+=data.think; thoughtBody.textContent=thoughtAcc; log.scrollTop=log.scrollHeight; }
+        else if(data.t){ acc+=data.t; m.textContent=acc; log.scrollTop=log.scrollHeight; }
+        else if(data.done){
+          meta.textContent=`${data.tokens} токенов · ${data.tok_per_s} tok/s · первый токен ${data.ttft_s}s`;
+          document.getElementById('tps').textContent=`${data.tok_per_s} tok/s`;
+          if(thoughtEl) thoughtEl.open=false; // свернуть раздумья после ответа
+        }
+        else if(data.error){ meta.textContent='ошибка: '+data.error; }
+      }
+    }
+  }catch(e){ meta.textContent='сбой соединения: '+e; }
+  m.classList.remove('cursor');
+  history.push({role:'assistant', content:acc});
+  busy=false; sendBtn.disabled=false; inp.focus();
+}
+</script>
+</body>
+</html>
