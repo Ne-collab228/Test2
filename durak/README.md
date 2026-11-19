@@ -26,3 +26,7 @@ godot --headless -s res://tests/sim.gd                # партии ботов 
 godot --headless -s res://tests/strength.gd -- 100    # сила сложного бота против среднего
 godot --headless -- --net-test host & godot --headless -- --net-test client   # сеть по Wi-Fi
 ```
+
+## Скачать
+
+Готовый APK: [`releases/durak-1.0.apk`](releases/durak-1.0.apk). Открой файл на GitHub, нажми «Download raw file» и установи на телефон.
