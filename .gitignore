@@ -20,3 +20,10 @@ gpt-train-ru/train_status.json
 
 # секрет телеграм-бота
 gemma-telegram-bot/bot_token.txt
+
+# секреты пульта
+server-control-bot/control_bot_token.txt
+server-control-bot/control_secret.txt
+server-control-bot/control_owner.txt
+server-control-bot/gemma_state.txt
+server-control-bot/shot.png
