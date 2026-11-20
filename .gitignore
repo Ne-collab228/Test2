@@ -20,3 +20,5 @@ gpt-train-ru/train_status.json
 
 # секрет телеграм-бота
 gemma-telegram-bot/bot_token.txt
+gemma-telegram-bot/chat_settings.json
+gemma-telegram-bot/gemma_state.txt
