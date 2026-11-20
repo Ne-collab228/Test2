@@ -18,12 +18,15 @@ gpt-train-ru/samples.txt
 gpt-train-ru/meta.json
 gpt-train-ru/train_status.json
 
-# секрет телеграм-бота
+# секрет и состояние телеграм-бота с Gemma
 gemma-telegram-bot/bot_token.txt
+gemma-telegram-bot/chat_settings.json
+gemma-telegram-bot/gemma_state.txt
 
-# секреты пульта
+# секреты и временные файлы пульта сервера
 server-control-bot/control_bot_token.txt
 server-control-bot/control_secret.txt
 server-control-bot/control_owner.txt
 server-control-bot/gemma_state.txt
 server-control-bot/shot.png
+server-control-bot/browse*.png
