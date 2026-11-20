@@ -8,3 +8,12 @@ __pycache__/
 # состояние чата / логи
 gemma-server/history.json
 *.log
+
+# обучение GPT
+gpt-train-ru/data/
+gpt-train-ru/*.pt
+gpt-train-ru/*.png
+gpt-train-ru/*.csv
+gpt-train-ru/samples.txt
+gpt-train-ru/meta.json
+gpt-train-ru/train_status.json
