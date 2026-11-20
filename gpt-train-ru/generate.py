@@ -2,17 +2,22 @@
 import os, json, torch, torch.nn as nn
 from torch.nn import functional as F
 
-HERE = os.path.dirname(__file__)
-meta = json.load(open(os.path.join(HERE, "meta.json")))
+HERE = os.path.dirname(os.path.abspath(__file__))
+# папка с ckpt.pt и meta.json (по умолчанию рядом со скриптом; можно RUN_DIR=results)
+RUN = os.path.abspath(os.environ.get("RUN_DIR", HERE))
+meta = json.load(open(os.path.join(RUN, "meta.json")))
 V, BLOCK, N_LAYER, N_EMBD = meta["V"], meta["block"], meta["layers"], meta["embd"]
 N_HEAD = int(os.environ.get("N_HEAD", 6))
 TEMP = float(os.environ.get("TEMP", 0.8))
 TOPK = int(os.environ.get("TOPK", 40))
 N_NEW = int(os.environ.get("N_NEW", 600))
 
-# словарь — ровно как при обучении
-text = open(os.path.join(HERE, "data", "russian.txt"), encoding="utf-8").read()
-chars = sorted(set(text))
+# словарь — ровно как при обучении: из meta.json, иначе восстанавливаем по корпусу
+if meta.get("vocab"):
+    chars = list(meta["vocab"])
+else:
+    text = open(os.path.join(HERE, "data", "russian.txt"), encoding="utf-8").read()
+    chars = sorted(set(text))
 stoi = {c: i for i, c in enumerate(chars)}
 itos = {i: c for i, c in enumerate(chars)}
 
@@ -44,7 +49,7 @@ class GPT(nn.Module):
         x=self.tok(idx)+self.pos(torch.arange(T)); x=self.lnf(self.blocks(x))
         return self.head(x)
 
-m=GPT(); m.load_state_dict(torch.load(os.path.join(HERE,"ckpt.pt"))); m.eval()
+m=GPT(); m.load_state_dict(torch.load(os.path.join(RUN,"ckpt.pt"))); m.eval()
 
 @torch.no_grad()
 def gen(prompt=""):

@@ -110,7 +110,8 @@ n_params = sum(p.numel() for p in model.parameters())
 print(f"[model] params={n_params/1e6:.1f}M vocab={V} ctx={BLOCK} layers={N_LAYER} embd={N_EMBD} heads={N_HEAD}", flush=True)
 with open(os.path.join(HERE, "meta.json"), "w") as f:
     json.dump({"V": V, "params_M": round(n_params/1e6, 1), "label": LABEL,
-               "block": BLOCK, "layers": N_LAYER, "embd": N_EMBD}, f, ensure_ascii=False)
+               "block": BLOCK, "layers": N_LAYER, "embd": N_EMBD,
+               "vocab": "".join(chars)}, f, ensure_ascii=False)  # словарь нужен для generate.py
 
 @torch.no_grad()
 def est_loss():
