@@ -17,3 +17,6 @@ gpt-train-ru/*.csv
 gpt-train-ru/samples.txt
 gpt-train-ru/meta.json
 gpt-train-ru/train_status.json
+
+# секрет телеграм-бота
+gemma-telegram-bot/bot_token.txt
