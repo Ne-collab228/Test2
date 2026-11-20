@@ -1,1 +1,2 @@
-playwright>=1.40  # только для /shot (скриншоты). Остальное — stdlib
+playwright>=1.40   # /shot и браузер (/open, /click ...)
+Pillow>=10         # сетка-прицел поверх скриншота

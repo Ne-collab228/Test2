@@ -4,7 +4,9 @@
 import os, json, time, html, shlex, subprocess, secrets, urllib.request, urllib.parse, urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SHOT_BROWSER = "/opt/pw-browsers/chromium"
+# путь к Chromium для скриншотов/браузера; переопределяется env SHOT_BROWSER.
+# Если файла нет — Playwright возьмёт свой браузер (playwright install chromium).
+SHOT_BROWSER = os.environ.get("SHOT_BROWSER", "/opt/pw-browsers/chromium")
 
 def _read(name, default=""):
     try:
@@ -66,6 +68,11 @@ COMMANDS = [
     ("sh", "Выполнить команду: /sh <cmd>"),
     ("tail", "Последние строки файла: /tail <path>"),
     ("shot", "Скриншот сайта: /shot <url>"),
+    ("open", "Открыть сайт в браузере (можно лазить)"),
+    ("click", "Кликнуть: /click <текст> или /click x y"),
+    ("type", "Ввести текст в поле: /type <текст>"),
+    ("enter", "Нажать Enter"),
+    ("close", "Закрыть браузер"),
     ("help", "Список всех команд"),
 ]
 
@@ -83,10 +90,16 @@ HELP = (
     "🌡 /temp — температура процессора\n"
     "💻 /sh <команда> — выполнить в терминале\n"
     "      напр. /sh ls -la   ·   /sh cat bot.log\n"
-    "📸 /shot <url> — прислать скриншот сайта\n"
-    "      напр. /shot ya.ru\n"
-    "📄 /tail <файл> — последние строки файла/лога\n"
-    "      напр. /tail bot.log\n\n"
+    "📸 /shot <url> — скриншот сайта (одно фото)\n"
+    "📄 /tail <файл> — последние строки файла/лога\n\n"
+    "🌐 БРАУЗЕР (лазить по сайту):\n"
+    "/open <url> — открыть сайт\n"
+    "/click <текст> — кликнуть по ссылке с этим текстом\n"
+    "/click x y — кликнуть по координатам\n"
+    "/type <текст> — ввести текст в поле\n"
+    "/enter — нажать Enter (поиск)\n"
+    "/close — закрыть браузер\n"
+    "Под скриншотом — кнопки ⬆️⬇️ скролл, 🔙 назад, 🔄 обновить.\n\n"
     "Снизу есть кнопки, а при вводе «/» всплывают подсказки."
 )
 
@@ -114,25 +127,57 @@ def send_mono(chat_id, text):
         api("sendMessage", chat_id=chat_id,
             text=f"<pre>{html.escape(text[i:i+3500])}</pre>", parse_mode="HTML")
 
-def send_photo(chat_id, path, caption=""):
-    b = "----ctl" + secrets.token_hex(8)
-    with open(path, "rb") as f:
-        img = f.read()
+def _multipart(fields, file_field, img, boundary):
     body = b""
-    def field(n, v):
-        return (f"--{b}\r\nContent-Disposition: form-data; name=\"{n}\"\r\n\r\n{v}\r\n").encode()
-    body += field("chat_id", chat_id)
+    for n, v in fields:
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{n}\"\r\n\r\n{v}\r\n").encode()
+    body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; "
+             f"filename=\"img.png\"\r\nContent-Type: image/png\r\n\r\n").encode()
+    body += img + b"\r\n" + f"--{boundary}--\r\n".encode()
+    return body
+
+def send_photo(chat_id, path, caption="", inline=None):
+    b = "----ctl" + secrets.token_hex(8)
+    img = open(path, "rb").read()
+    fields = [("chat_id", chat_id)]
     if caption:
-        body += field("caption", caption)
-    body += (f"--{b}\r\nContent-Disposition: form-data; name=\"photo\"; "
-             f"filename=\"shot.png\"\r\nContent-Type: image/png\r\n\r\n").encode()
-    body += img + b"\r\n" + f"--{b}--\r\n".encode()
+        fields.append(("caption", caption))
+    if inline:
+        fields.append(("reply_markup", inline))
+    body = _multipart(fields, "photo", img, b)
     req = urllib.request.Request(f"{API}/sendPhoto", data=body,
                                  headers={"Content-Type": f"multipart/form-data; boundary={b}"})
     try:
-        urllib.request.urlopen(req, timeout=90)
+        d = json.load(urllib.request.urlopen(req, timeout=90))
+        return d["result"]["message_id"] if d.get("ok") else None
     except Exception as e:
-        send(chat_id, f"⚠️ не отправил фото: {e}")
+        send(chat_id, f"⚠️ не отправил фото: {e}"); return None
+
+def edit_photo(chat_id, mid, path, caption="", inline=None):
+    b = "----ctl" + secrets.token_hex(8)
+    img = open(path, "rb").read()
+    media = {"type": "photo", "media": "attach://photo"}
+    if caption:
+        media["caption"] = caption
+    fields = [("chat_id", chat_id), ("message_id", mid),
+              ("media", json.dumps(media, ensure_ascii=False))]
+    if inline:
+        fields.append(("reply_markup", inline))
+    body = _multipart(fields, "photo", img, b)
+    req = urllib.request.Request(f"{API}/editMessageMedia", data=body,
+                                 headers={"Content-Type": f"multipart/form-data; boundary={b}"})
+    try:
+        d = json.load(urllib.request.urlopen(req, timeout=60))
+        return bool(d.get("ok"))
+    except Exception as e:
+        print("[editphoto err]", e, flush=True)
+        return False
+
+def inline_kb(rows):
+    return json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
+
+def answer_cb(cq_id, text=""):
+    api("answerCallbackQuery", callback_query_id=cq_id, text=text)
 
 # ---------- системное ----------
 def sh(cmd, timeout=40):
@@ -250,10 +295,23 @@ def ps_top():
             rows.append(f"{name[:15]:<16}{float(cpu):>5.1f}%{float(mem):>5.1f}%")
     return "\n".join(rows)
 
+def gemma_state():
+    """Состояние модели, которое пишет чат-бот: рядом с пультом, в соседней папке
+    репозитория (gemma-telegram-bot/) или по пути из env GEMMA_STATE_FILE."""
+    for p in (os.environ.get("GEMMA_STATE_FILE", ""),
+              os.path.join(HERE, "gemma_state.txt"),
+              os.path.join(HERE, "..", "gemma-telegram-bot", "gemma_state.txt")):
+        if p and os.path.exists(p):
+            try:
+                return open(p).read().strip()
+            except Exception:
+                pass
+    return ""
+
 def gemma_line():
     if not _running("telegram_bot.py"):
         return "⚪️ остановлен"
-    state = _read("gemma_state.txt")
+    state = gemma_state()
     if state == "loaded":
         return "🟢 модель загружена"
     return "🟡 запущен, модель выгружена"
@@ -306,18 +364,193 @@ def tail_file(arg):
         return "Напиши путь: /tail <файл>"
     return sh(f"tail -n 25 {shlex.quote(arg)}")
 
-def screenshot(url, out):
+# ---------- браузер (общий, живёт между командами) ----------
+_pw = None
+_browser = None
+_bpage = None
+browse_state = {"mid": None, "zoom": None, "chat": None, "sig": None}
+BROWSE_KB = inline_kb([
+    [{"text": "⬆️", "callback_data": "b:up"}, {"text": "⬇️", "callback_data": "b:down"},
+     {"text": "🔄", "callback_data": "b:reload"}],
+    [{"text": "🔙 Назад", "callback_data": "b:back"}, {"text": "🔗 URL", "callback_data": "b:url"},
+     {"text": "❌ Закрыть", "callback_data": "b:close"}],
+])
+
+def _ensure_browser():
+    global _pw, _browser
+    if _browser is None:
+        from playwright.sync_api import sync_playwright
+        _pw = sync_playwright().start()
+        kw = {"args": ["--no-sandbox", "--headless=new"]}
+        if SHOT_BROWSER and os.path.exists(SHOT_BROWSER):
+            kw["executable_path"] = SHOT_BROWSER
+        _browser = _pw.chromium.launch(**kw)
+    return _browser
+
+def screenshot(url, out):  # /shot — одноразовый, на общем браузере
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        br = p.chromium.launch(executable_path=SHOT_BROWSER, args=["--no-sandbox", "--headless=new"])
-        pg = br.new_page(viewport={"width": 1280, "height": 900}, device_scale_factor=1)
+    pg = _ensure_browser().new_page(viewport={"width": 1280, "height": 900}, device_scale_factor=1)
+    try:
         pg.goto(url, timeout=30000, wait_until="load")
-        pg.wait_for_timeout(1500)
+        pg.wait_for_timeout(1200)
         pg.screenshot(path=out, full_page=False)
-        br.close()
+    finally:
+        pg.close()
     return url
+
+def bpage():
+    global _bpage
+    br = _ensure_browser()
+    if _bpage is None or _bpage.is_closed():
+        _bpage = br.new_page(viewport={"width": 1080, "height": 1600}, device_scale_factor=1)
+    return _bpage
+
+def browser_quit():
+    global _bpage
+    try:
+        if _bpage and not _bpage.is_closed():
+            _bpage.close()
+    except Exception:
+        pass
+    _bpage = None
+
+def b_click_text(arg):
+    pg = bpage()
+    for loc in (pg.get_by_role("link", name=arg, exact=False),
+                pg.get_by_role("button", name=arg, exact=False),
+                pg.get_by_text(arg, exact=False)):
+        try:
+            loc.first.click(timeout=3500)
+            return True
+        except Exception:
+            continue
+    return False
+
+def b_smart_click(x, y, tol=90):
+    """Клик с прилипанием к ближайшему кликабельному элементу (в радиусе tol)."""
+    pg = bpage()
+    try:
+        t = pg.evaluate(
+            "(a) => {const x=a[0],y=a[1];"
+            "const els=[...document.querySelectorAll("
+            "'a,button,input,select,textarea,[role=button],[role=link],[onclick],summary,label')];"
+            "let best=null,bd=1e18;"
+            "for(const e of els){const r=e.getBoundingClientRect();"
+            "if(r.width<4||r.height<4||r.bottom<0||r.top>innerHeight)continue;"
+            "const cx=r.left+r.width/2,cy=r.top+r.height/2,d=Math.hypot(cx-x,cy-y);"
+            "if(d<bd){bd=d;best=[cx,cy,d];}}return best;}",
+            [x, y, tol])
+    except Exception:
+        t = None
+    if t and t[2] <= tol:
+        pg.mouse.click(int(t[0]), int(t[1])); return True
+    pg.mouse.click(x, y); return False
+
+def page_opened():
+    try:
+        return bpage().url not in ("about:blank", "")
+    except Exception:
+        return False
+
+# ---------- сетка для тыка по экрану (два уровня) ----------
+L1_N = 8   # крупная сетка: выбор зоны
+L2_N = 5   # сетка внутри зоны: точный клик
+_FONTS = {}
+CONTROL_ROW = [
+    {"text": "⬆️", "callback_data": "b:up"}, {"text": "⬇️", "callback_data": "b:down"},
+    {"text": "🔄", "callback_data": "b:reload"}, {"text": "🔙", "callback_data": "b:back"},
+    {"text": "❌", "callback_data": "b:close"}]
+
+def _grid_font(size):
+    if size in _FONTS:
+        return _FONTS[size]
+    from PIL import ImageFont
+    import matplotlib, glob
+    cands = glob.glob(os.path.join(os.path.dirname(matplotlib.__file__),
+                                   "mpl-data/fonts/ttf/DejaVuSans-Bold.ttf"))
+    cands += ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+    f = None
+    for p in cands:
+        try:
+            f = ImageFont.truetype(p, size); break
+        except Exception:
+            continue
+    if f is None:
+        f = ImageFont.load_default()
+    _FONTS[size] = f
+    return f
+
+def _draw_cells(im, n):
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(im, "RGBA")
+    W, H = im.size
+    cw, ch = W / n, H / n
+    for i in range(1, n):
+        d.line([(cw * i, 0), (cw * i, H)], fill=(255, 45, 45, 150), width=2)
+        d.line([(0, ch * i), (W, ch * i)], fill=(255, 45, 45, 150), width=2)
+    f = _grid_font(max(16, int(min(cw, ch) / 2.6)))
+    k = 1
+    for r in range(n):
+        for c in range(n):
+            x, y = int((c + 0.5) * cw), int((r + 0.5) * ch)
+            t = str(k)
+            bb = d.textbbox((x, y), t, font=f, anchor="mm")
+            d.rectangle([bb[0] - 4, bb[1] - 3, bb[2] + 4, bb[3] + 3], fill=(255, 45, 45, 160))
+            d.text((x, y), t, fill=(255, 255, 255), anchor="mm", font=f)
+            k += 1
+    return im
+
+def cells_kb(n, prefix, extra_rows):
+    rows, k = [], 1
+    for r in range(n):
+        rows.append([{"text": str(k + c), "callback_data": f"{prefix}:{k + c}"} for c in range(n)])
+        k += n
+    return inline_kb(rows + extra_rows)
+
+def frame_sig(path):
+    try:
+        from PIL import Image
+        return list(Image.open(path).convert("L").resize((32, 32)).getdata())
+    except Exception:
+        return None
+
+def frame_changed(a, b, thresh=0.03):
+    if not a or not b or len(a) != len(b):
+        return True
+    diff = sum(1 for x, y in zip(a, b) if abs(x - y) > 22)
+    return diff / len(a) > thresh
+
+def show_browser(chat_id, note="", raw=None):
+    gridded = os.path.join(HERE, "browse_grid.png")
+    browse_state["chat"] = chat_id
+    try:
+        if raw is None:                       # обычный вызов — делаем свежий скриншот
+            raw = os.path.join(HERE, "browse.png")
+            bpage().screenshot(path=raw, full_page=False)
+        browse_state["sig"] = frame_sig(raw)  # запоминаем подпись кадра
+        from PIL import Image
+        im = Image.open(raw).convert("RGB")
+        z = browse_state.get("zoom")
+        if z:
+            crop = im.crop((z[0], z[1], z[2], z[3]))
+            scale = 1080 / max(1, crop.width)
+            crop = crop.resize((1080, max(1, int(crop.height * scale))))
+            _draw_cells(crop, L2_N); crop.save(gridded)
+            kb = cells_kb(L2_N, "h", [[{"text": "⬅️ Вся страница", "callback_data": "b:unzoom"}], CONTROL_ROW])
+            hint = "🔎 Увеличено. Жми клетку — кликну точно туда."
+        else:
+            _draw_cells(im, L1_N); im.save(gridded)
+            kb = cells_kb(L1_N, "g", [CONTROL_ROW])
+            hint = "👆 Жми клетку — увеличу её для точного клика."
+    except Exception as e:
+        print("[browser shot err]", e, flush=True)
+        send(chat_id, f"⚠️ не смог сделать скриншот:\n{str(e)[:150]}"); return
+    cap = "🌐 " + bpage().url[:70] + "\n" + hint + (("\n" + note) if note else "")
+    mid = browse_state.get("mid")
+    if mid and edit_photo(chat_id, mid, gridded, caption=cap, inline=kb):
+        return
+    browse_state["mid"] = send_photo(chat_id, gridded, caption=cap, inline=kb)
 
 # ---------- обработка ----------
 def authorized(uid):
@@ -382,7 +615,7 @@ def handle(msg):
         send(chat_id, speed())
     elif text.startswith("/tail"):
         send_mono(chat_id, tail_file(text[5:]))
-    elif text.startswith("/sh"):
+    elif text.startswith("/sh ") or text.strip() == "/sh":
         cmd = text[3:].strip()
         if not cmd:
             send(chat_id, "Напиши команду после /sh:\n/sh ls -la")
@@ -400,9 +633,135 @@ def handle(msg):
                 final = screenshot(parts[1].strip(), out)
                 send_photo(chat_id, out, caption="📸 " + final)
             except Exception as e:
-                send(chat_id, f"⚠️ скриншот не вышел: {e}")
+                print("[shot err]", repr(e), flush=True)
+                send(chat_id, f"⚠️ скриншот не вышел:\n{str(e)[:300]}")
+    elif text.startswith("/open") or text.startswith("/browse"):
+        parts = text.split(maxsplit=1)
+        if len(parts) != 2:
+            send(chat_id, "Напиши адрес:\n/open ya.ru")
+        else:
+            api("sendChatAction", chat_id=chat_id, action="upload_photo")
+            try:
+                url = parts[1].strip()
+                if not url.startswith(("http://", "https://")):
+                    url = "https://" + url
+                bpage().goto(url, timeout=30000, wait_until="load")
+                bpage().wait_for_timeout(1000)
+                browse_state["mid"] = None; browse_state["zoom"] = None
+                show_browser(chat_id, "Жми клетку → увеличу → тык для точного клика.")
+            except Exception as e:
+                send(chat_id, f"⚠️ не открыл:\n{str(e)[:200]}")
+    elif text.startswith("/click"):
+        arg = text[6:].strip()
+        if not page_opened():
+            send(chat_id, "Сначала открой сайт: /open ya.ru")
+        elif not arg:
+            send(chat_id, "/click <текст ссылки>  или  /click <x> <y>")
+        else:
+            api("sendChatAction", chat_id=chat_id, action="upload_photo")
+            try:
+                p = arg.split()
+                if len(p) == 2 and p[0].isdigit() and p[1].isdigit():
+                    b_smart_click(int(p[0]), int(p[1]))
+                    ok = True
+                else:
+                    ok = b_click_text(arg)
+                bpage().wait_for_timeout(1200)
+                browse_state["zoom"] = None
+                show_browser(chat_id, f"кликнул: {arg}" if ok else f"не нашёл «{arg}» на странице")
+            except Exception as e:
+                send(chat_id, f"⚠️ не кликнул «{arg}»:\n{str(e)[:150]}")
+    elif text.startswith("/type"):
+        s = text[5:].strip()
+        if not page_opened():
+            send(chat_id, "Сначала открой сайт: /open ya.ru")
+        elif not s:
+            send(chat_id, "/type <текст для ввода в поле>")
+        else:
+            try:
+                bpage().keyboard.type(s)
+                show_browser(chat_id, f"ввёл: {s}")
+            except Exception as e:
+                send(chat_id, f"⚠️ {str(e)[:150]}")
+    elif text.startswith("/enter"):
+        if not page_opened():
+            send(chat_id, "Сначала открой сайт: /open ya.ru")
+        else:
+            try:
+                bpage().keyboard.press("Enter"); bpage().wait_for_timeout(1500)
+                show_browser(chat_id, "нажал Enter")
+            except Exception as e:
+                send(chat_id, f"⚠️ {str(e)[:150]}")
+    elif text.startswith("/close"):
+        browser_quit(); browse_state["mid"] = None
+        send(chat_id, "🌐 Браузер закрыт.")
     else:
         send(chat_id, "Не знаю такой команды. Жми кнопку снизу или /help.")
+
+def handle_cb(cq):
+    uid = cq["from"]["id"]
+    chat_id = cq["message"]["chat"]["id"]
+    if not authorized(uid):
+        answer_cb(cq["id"], "⛔ Доступ запрещён"); return
+    data = cq.get("data", "")
+    is_action = data.startswith(("g:", "h:")) or (data.startswith("b:") and data != "b:close")
+    if is_action and not page_opened():
+        answer_cb(cq["id"], "Сначала /open <сайт>"); return
+    vp = bpage().viewport_size or {"width": 1080, "height": 1600}
+    try:
+        if data.startswith("g:"):            # уровень 1 -> зум в клетку
+            n = int(data[2:]); r = (n - 1) // L1_N; c = (n - 1) % L1_N
+            cw, ch = vp["width"] / L1_N, vp["height"] / L1_N
+            browse_state["zoom"] = (int(c * cw), int(r * ch), int((c + 1) * cw), int((r + 1) * ch))
+            answer_cb(cq["id"], f"🔎 зона {n}")
+            show_browser(chat_id); return
+        if data.startswith("h:"):            # уровень 2 -> точный клик
+            z = browse_state.get("zoom")
+            if not z:
+                answer_cb(cq["id"], "нет зума"); return
+            n = int(data[2:]); r = (n - 1) // L2_N; c = (n - 1) % L2_N
+            x0, y0, x1, y1 = z
+            x = int(x0 + (c + 0.5) * (x1 - x0) / L2_N)
+            y = int(y0 + (r + 0.5) * (y1 - y0) / L2_N)
+            snapped = b_smart_click(x, y); bpage().wait_for_timeout(1200)
+            browse_state["zoom"] = None
+            answer_cb(cq["id"], "клик по элементу ✅" if snapped else "клик (рядом пусто)")
+            show_browser(chat_id, "кликнул"); return
+        if data == "b:unzoom":
+            browse_state["zoom"] = None; answer_cb(cq["id"]); show_browser(chat_id); return
+        if data == "b:url":
+            answer_cb(cq["id"], bpage().url[:200]); return
+        if data == "b:close":
+            browser_quit(); browse_state["mid"] = None; browse_state["zoom"] = None
+            answer_cb(cq["id"], "Закрыто"); send(chat_id, "🌐 Браузер закрыт."); return
+        # навигация — сбрасываем зум
+        browse_state["zoom"] = None
+        if data == "b:down":
+            bpage().mouse.wheel(0, 900); show_browser(chat_id)
+        elif data == "b:up":
+            bpage().mouse.wheel(0, -900); show_browser(chat_id)
+        elif data == "b:reload":
+            bpage().reload(timeout=20000); bpage().wait_for_timeout(1000); show_browser(chat_id)
+        elif data == "b:back":
+            bpage().go_back(timeout=20000); bpage().wait_for_timeout(1000); show_browser(chat_id)
+        answer_cb(cq["id"])
+    except Exception as e:
+        answer_cb(cq["id"], f"ошибка: {str(e)[:60]}")
+
+def auto_refresh():
+    # авто-обновление фото, если страница изменилась сама (не в режиме прицела)
+    if not browse_state.get("mid") or browse_state.get("zoom"):
+        return
+    chat = browse_state.get("chat")
+    if not chat or _bpage is None or _bpage.is_closed():
+        return
+    try:
+        tmp = os.path.join(HERE, "browse_auto.png")
+        _bpage.screenshot(path=tmp, full_page=False)
+        if frame_changed(frame_sig(tmp), browse_state.get("sig")):
+            show_browser(chat, raw=tmp)
+    except Exception as e:
+        print("[auto err]", e, flush=True)
 
 def main():
     me = api("getMe")
@@ -413,16 +772,19 @@ def main():
     print(f"[ctl] запущен как @{me['result']['username']} | секрет: {SECRET}", flush=True)
     offset = None
     while True:
-        upd = api("getUpdates", offset=offset, timeout=30)
-        if not upd or not upd.get("ok"):
-            time.sleep(2); continue
-        for u in upd["result"]:
-            offset = u["update_id"] + 1
-            if "message" in u:
+        browsing = bool(browse_state.get("mid")) and not browse_state.get("zoom")
+        upd = api("getUpdates", offset=offset, timeout=(3 if browsing else 25))
+        if upd and upd.get("ok"):
+            for u in upd["result"]:
+                offset = u["update_id"] + 1
                 try:
-                    handle(u["message"])
+                    if "message" in u:
+                        handle(u["message"])
+                    elif "callback_query" in u:
+                        handle_cb(u["callback_query"])
                 except Exception as e:
                     print("[handle err]", e, flush=True)
+        auto_refresh()
 
 if __name__ == "__main__":
     main()
