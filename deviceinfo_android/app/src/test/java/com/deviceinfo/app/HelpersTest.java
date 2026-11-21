@@ -175,8 +175,8 @@ public class HelpersTest {
         t += 30000; BatteryMeter.step(s, t, 79, -1, -600, 5300);
         assertFalse(s.active);
         assertEquals("gap", s.lastAbort);
-        // уровень сменился сразу после паузы — граница неточная, сессия не стартует
-        t += 1500; BatteryMeter.step(s, t, 78, -1, -600, 5300);
+        // уровень сменился в тот же шаг, что и пауза — граница неточная, сессия не стартует
+        t += 30000; BatteryMeter.step(s, t, 78, -1, -600, 5300);
         assertFalse(s.active);
         t += 1500; BatteryMeter.step(s, t, 77, -1, -600, 5300);
         assertTrue(s.active);
