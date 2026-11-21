@@ -1,0 +1,23 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.deviceinfo.app'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.deviceinfo.app'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+    signingConfigs {
+        release {
+            storeFile file('../keystore/deviceinfo.keystore')
+            storePassword 'deviceinfo'
+            keyAlias 'deviceinfo'
+            keyPassword 'deviceinfo'
+        }
+    }
+    buildTypes { release { minifyEnabled false; signingConfig signingConfigs.release } }
+    lint { checkReleaseBuilds false; abortOnError false }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
