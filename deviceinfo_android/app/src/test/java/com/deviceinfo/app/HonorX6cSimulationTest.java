@@ -124,6 +124,7 @@ public class HonorX6cSimulationTest {
         for (Page p : Pages.create()) {
             Section s1 = build(p, ctx);
             Thread.sleep(300);
+            advanceClock(1500);
             Section s2 = build(p, ctx);
             for (Section s : new Section[]{s1, s2}) {
                 assertFalse(p.title() + ": empty", s.items.isEmpty());
@@ -135,6 +136,11 @@ public class HonorX6cSimulationTest {
             out.put(p.title(), t);
         }
         return out;
+    }
+
+    /** Robolectric-часы SystemClock не идут сами — двигаем вручную (имитация интервала 1.5 с). */
+    static void advanceClock(long ms) {
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(ms));
     }
 
     private static String page(Map<String, String> all, String... titleParts) {
@@ -182,10 +188,19 @@ public class HonorX6cSimulationTest {
         assertTrue("design 5300\n" + t, t.contains("5300"));
         assertTrue("temp 31.2\n" + t, t.contains("31.2"));
         assertTrue("voltage 3.912\n" + t, t.contains("3.912"));
+        assertTrue("sign corrected to -412 after refreshes\n" + t, t.contains("-412 мА") || t.contains("−412 мА"));
         assertFalse("412000\n" + t, t.contains("412000"));
         assertFalse("0 мА\n" + t, t.matches("(?s).*[^0-9.]0 мА.*"));
         assertTrue("current ~412 mA\n" + t, t.matches("(?s).*[-−]?412(\\.\\d+)? мА.*"));
         assertTrue("MagicOS units mA\n" + t, t.contains("мА") && (t.contains("MagicOS") || t.contains("мА·ч")));
+    }
+
+    /** С первого обновления статус «разряжается» + положительный ток не должен показываться как «+ в батарею / зарядка». */
+    @Test public void battery_firstRefreshSignConsistentWithStatus() throws Exception {
+        setup("sysroot");
+        String t = textOf(BatteryPage.class);
+        assertFalse("discharging status but shown as charging current\n" + t,
+                t.contains("+412 мА") || t.contains("(зарядка)"));
     }
 
     @Test public void display() throws Exception {
@@ -244,6 +259,36 @@ public class HonorX6cSimulationTest {
         String t = textOf(CpuPage.class);
         System.out.println("CPU:\n" + t);
         assertFalse(t.isEmpty());
+    }
+
+    /** Нагрузка без /proc/stat: через cpuidle; время простоя растёт на 60% интервала -> нагрузка ~40%. */
+    @Test public void cpuLoadViaCpuidleDelta() throws Exception {
+        File tmp = java.nio.file.Files.createTempDirectory("x6c").toFile();
+        copyDir(resDir("sysroot"), tmp);
+        ctx = null;
+        setup("sysroot");
+        Util.root = tmp.getAbsolutePath();
+        CpuPage page = new CpuPage();
+        build(page, ctx);
+        for (int i = 0; i < 8; i++) {
+            File f = new File(tmp, "sys/devices/system/cpu/cpu" + i + "/cpuidle/state0/time");
+            long v = Long.parseLong(new String(Files.readAllBytes(f.toPath())).trim());
+            Files.write(f.toPath(), String.valueOf(v + 900_000).getBytes());
+        }
+        advanceClock(1500);
+        Section s = build(page, ctx);
+        String t = s.toText();
+        System.out.println("CPU(load):\n" + t);
+        assertTrue(t, t.matches("(?s).*Общая: \\d+%.*"));
+        assertTrue(t, t.contains("CPU0 · Cortex-A55: 1.20 ГГц · 4"));
+    }
+
+    private static void copyDir(File a, File b) throws Exception {
+        for (File f : a.listFiles()) {
+            File t = new File(b, f.getName());
+            if (f.isDirectory()) { t.mkdirs(); copyDir(f, t); }
+            else Files.copy(f.toPath(), t.toPath());
+        }
     }
 
     @Test public void mainActivityTabs() throws Exception {
