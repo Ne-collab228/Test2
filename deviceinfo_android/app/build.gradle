@@ -20,7 +20,11 @@ android {
     buildTypes { release { minifyEnabled false; signingConfig signingConfigs.release } }
     lint { checkReleaseBuilds false; abortOnError false }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
-    testOptions { unitTests { includeAndroidResources = true; all { maxHeapSize = "2g" } } }
+    testOptions { unitTests { includeAndroidResources = true; all {
+        maxHeapSize = "2g"
+        def rd = new File('/home/user/rdeps')
+        if (rd.exists()) { systemProperty 'robolectric.offline', 'true'; systemProperty 'robolectric.dependency.dir', rd.absolutePath }
+    } } }
 }
 dependencies {
     testImplementation 'junit:junit:4.13.2'
