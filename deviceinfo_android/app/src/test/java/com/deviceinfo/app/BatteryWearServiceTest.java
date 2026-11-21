@@ -30,6 +30,8 @@ public class BatteryWearServiceTest {
         BatteryWearService.disableLoop = true;
         BatteryWearService.running = false;
         BatteryWearService.runCount = 0;
+        BatteryWearService.precise = false;
+        BatteryWearService.preciseState = null;
     }
 
     @After public void tearDown() {
@@ -95,7 +97,8 @@ public class BatteryWearServiceTest {
         Section sec = new Section();
         new BatteryPage().build(ctx, sec);
         String txt = sec.toText();
-        assertTrue(txt, txt.contains("[кнопка] Запустить замер в фоне"));
+        assertTrue(txt, txt.contains("[кнопка] Быстрый замер (3 × 5 %)"));
+        assertTrue(txt, txt.contains("[кнопка] Точный замер (несколько часов)"));
         BatteryWearService.running = true;
         Section sec2 = new Section();
         new BatteryPage().build(ctx, sec2);
@@ -132,5 +135,57 @@ public class BatteryWearServiceTest {
             android.view.ViewGroup g = (android.view.ViewGroup) v;
             for (int i = 0; i < g.getChildCount(); i++) collect(g.getChildAt(i), out);
         }
+    }
+
+    /** Точный замер в службе: разряд 90 → 40 % при 500 мА, ёмкость 4500 мА·ч, итог и уведомление. */
+    @Test public void preciseModeEndToEnd() {
+        Context ctx = org.robolectric.RuntimeEnvironment.getApplication();
+        ctx.getSharedPreferences(PreciseMeter.PREFS, Context.MODE_PRIVATE).edit().clear().commit();
+        ServiceController<BatteryWearService> c = Robolectric.buildService(BatteryWearService.class,
+                new Intent().putExtra(BatteryWearService.EXTRA_PRECISE, true));
+        BatteryWearService s = c.create().startCommand(0, 1).get();
+        assertTrue(BatteryWearService.running);
+        assertTrue(BatteryWearService.precise);
+        double used = 0;
+        long t = 0;
+        for (int i = 0; i < 2000 && BatteryWearService.running; i++) {
+            int level = 90 - (int) Math.floor(used / 45.0);
+            s.onSample(t, level, 3, 0, -500);
+            t += 20_000; used += 500.0 * 20 / 3600.0;
+        }
+        assertFalse(BatteryWearService.running);
+        PreciseMeter.Result r = PreciseMeter.last(ctx);
+        assertTrue(r != null);
+        assertEquals(4500, r.capacityMah, 4500 * 0.02);
+        assertTrue("" + r.delta, r.delta >= 49);
+        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        Notification fin = shadowOf(nm).getNotification(BatteryWearService.ID_FINAL);
+        assertTrue(text(fin), text(fin).contains("Точный замер готов"));
+        // экран показывает результат и здоровье по точному замеру
+        ctx.sendStickyBroadcast(new Intent(Intent.ACTION_BATTERY_CHANGED).putExtra("level", 39).putExtra("scale", 100)
+                .putExtra("status", 3).putExtra("plugged", 0).putExtra("present", true)
+                .putExtra("temperature", 300).putExtra("voltage", 3800).putExtra("health", 2));
+        Section sec = new Section();
+        try { new BatteryPage().build(ctx, sec); } catch (Exception e) { throw new RuntimeException(e); }
+        assertTrue(sec.toText(), sec.toText().contains("Точный замер:"));
+    }
+
+    /** Зарядка раньше 20 % — замер прерван, причина сохранена и видна на экране. */
+    @Test public void preciseModeAbortedByCharger() {
+        Context ctx = org.robolectric.RuntimeEnvironment.getApplication();
+        ctx.getSharedPreferences(PreciseMeter.PREFS, Context.MODE_PRIVATE).edit().clear().commit();
+        ServiceController<BatteryWearService> c = Robolectric.buildService(BatteryWearService.class,
+                new Intent().putExtra(BatteryWearService.EXTRA_PRECISE, true));
+        BatteryWearService s = c.create().startCommand(0, 1).get();
+        double used = 0; long t = 0;
+        for (int i = 0; i < 300; i++) {
+            int level = 80 - (int) Math.floor(used / 45.0);
+            s.onSample(t, level, 3, 0, -500);
+            t += 20_000; used += 500.0 * 20 / 3600.0;
+        }
+        s.onSample(t, 70, 2, 1, 1500);
+        assertFalse(BatteryWearService.running);
+        assertTrue(PreciseMeter.last(ctx) == null);
+        assertTrue(PreciseMeter.lastAbort(ctx), PreciseMeter.lastAbort(ctx).contains("зарядка"));
     }
 }

@@ -99,48 +99,71 @@ public class ThermalPage implements Page {
         else if (!Double.isNaN(bat)) out.row("Батарея", fmt(bat) + " (датчик зоны)", Section.temp(bat));
         else out.row("Батарея", "нет данных", Section.MUTED);
 
-        // --- состояние системы ---
-        out.header("Тепловое состояние системы");
+        // --- нагрев по оценке Android ---
+        out.header("Нагрев телефона (оценка Android)");
         try {
             PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
             if (pm != null && Build.VERSION.SDK_INT >= 29) {
                 int st = pm.getCurrentThermalStatus();
                 String name = st >= 0 && st < STATUS.length ? STATUS[st] : "неизвестно (" + st + ")";
-                out.row("Статус", name, st <= 0 ? Section.OK : st <= 2 ? Section.WARN : Section.CRIT);
-            } else out.row("Статус", "недоступно (нужен Android 10+)", Section.MUTED);
+                out.row("Статус нагрева", name, st <= 0 ? Section.OK : st <= 2 ? Section.WARN : Section.CRIT);
+            } else out.row("Статус нагрева", "недоступно (нужен Android 10+)", Section.MUTED);
             if (pm != null && Build.VERSION.SDK_INT >= 30) {
                 float h = headroom(pm);
-                if (Float.isNaN(h)) out.row("До троттлинга", "нет данных (HAL не отдаёт запас)", Section.MUTED);
+                if (Float.isNaN(h)) out.row("Шкала нагрева", "нет данных (прошивка не отдаёт)", Section.MUTED);
                 else {
-                    double pct = h * 100.0;
                     java.util.Map<Integer, Float> th = null;
                     if (Build.VERSION.SDK_INT >= 35) {
                         try { th = pm.getThermalHeadroomThresholds(); } catch (Throwable ignored) { }
                     }
                     float light = lightThreshold(th);
-                    out.bar("Тепловой запас (headroom)", Util.f("%.2f  (%.0f%%)", h, pct), pct,
-                            h >= 1.0f ? Section.CRIT : h >= light ? Section.WARN : Section.OK);
                     // AOSP ThermalManagerService: headroom = (T − T_severe + 30) / 30,
-                    // где T — прогноз температуры датчика корпуса (SKIN) через 10 с,
-                    // T_severe — порог статуса «Сильный» из Thermal HAL. 1.0 — «Сильный»,
-                    // каждые 0.1 — это 3 °C. Лёгкое ограничение начинается раньше — с порога LIGHT.
-                    out.row("До лёгкого троттлинга", toLimitText(h, light),
-                            h >= light ? Section.WARN : (light - h) * 30 > 3 ? Section.OK : Section.WARN);
-                    out.row("До сильного троттлинга", toLimitText(h, 1.0f),
+                    // T — прогноз температуры корпуса (SKIN) через 10 с, T_severe — порог «Сильный».
+                    out.bar("Шкала нагрева", Util.f("%.2f из 1.00", h), Math.min(100, h * 100.0),
+                            h >= 1.0f ? Section.CRIT : h >= light ? Section.WARN : Section.OK);
+                    if (light < 1.0f)
+                        out.row("До статуса «Лёгкий»", toLimitText(h, light),
+                                h >= light ? Section.WARN : (light - h) * 30 > 3 ? Section.OK : Section.WARN);
+                    out.row("До статуса «Сильный»", toLimitText(h, 1.0f),
                             h >= 1.0f ? Section.CRIT : (1.0f - h) * 30 > 3 ? Section.OK : Section.WARN);
                     List<String[]> thRows = thresholdRows(th);
                     if (!thRows.isEmpty())
-                        out.table(new String[]{"Статус", "Порог headroom"}, thRows, new float[]{0.6f, 0.4f});
-                    out.note("Запас считает сама система (Thermal HAL): у неё есть доступ ко всем датчикам, "
-                            + "в том числе к закрытым для приложений. Берётся датчик корпуса (SKIN), а не "
-                            + "процессора, и прогноз на 10 с вперёд. 1.00 — статус «Сильный», шаг 0.10 ≈ 3 °C. "
-                            + "Лёгкое снижение частот начинается раньше — с порога «Лёгкий»"
-                            + (Float.isNaN(light) || light >= 1.0f ? "" : Util.f(" (на этом телефоне %.2f)", light))
-                            + ". Саму температуру система приложениям не отдаёт.");
+                        out.table(new String[]{"Статус", "С отметки шкалы"}, thRows, new float[]{0.6f, 0.4f});
+                    out.note("Android сам оценивает нагрев корпуса телефона (по своим датчикам, приложениям они "
+                            + "закрыты) с прогнозом на 10 секунд вперёд. 0 — холодный, 1.00 — статус «Сильный», "
+                            + "каждые 0.10 ≈ 3 °C. По этим статусам игры и приложения сами снижают нагрузку. "
+                            + "Частоты процессора прошивка ограничивает по своим правилам — фактическое "
+                            + "ограничение показано ниже.");
                 }
             }
         } catch (Throwable t) {
-            out.row("Статус", "недоступно", Section.MUTED);
+            out.row("Статус нагрева", "недоступно", Section.MUTED);
+        }
+
+        // --- фактическое ограничение частоты ---
+        List<long[]> pol = cpuLimits();
+        out.header("Ограничение частоты процессора (троттлинг)");
+        if (pol.isEmpty()) {
+            out.row("Состояние", "нет доступа к лимитам частоты", Section.MUTED);
+        } else {
+            long top = 0;
+            for (long[] x : pol) top = Math.max(top, x[2]);
+            boolean any = false;
+            for (long[] x : pol) {
+                String cores = x[0] == x[1] ? "Ядро " + x[0] : "Ядра " + x[0] + "–" + x[1];
+                cores += x[2] == top && pol.size() > 1 ? " (большие)" : (pol.size() > 1 ? " (малые)" : "");
+                if (x[3] > 0 && x[3] < x[2]) {
+                    any = true;
+                    out.row(cores, "ограничено до " + Util.khz(x[3]) + " из " + Util.khz(x[2])
+                            + Util.f(" (−%.0f %%)", 100.0 * (x[2] - x[3]) / x[2]), Section.WARN);
+                } else if (x[3] > 0) {
+                    out.row(cores, "без ограничений (до " + Util.khz(x[2]) + ")", Section.OK);
+                } else {
+                    out.row(cores, "лимит закрыт прошивкой (макс. " + Util.khz(x[2]) + ")", Section.MUTED);
+                }
+            }
+            out.note(any ? "Прошивка сейчас снижает максимальную частоту: из-за нагрева или режима энергосбережения."
+                    : "Это и есть настоящий троттлинг: когда телефон перегреется, здесь появится «ограничено до …».");
         }
 
         // --- таблица зон ---
@@ -168,6 +191,30 @@ public class ThermalPage implements Page {
             out.header("hwmon");
             out.table(new String[]{"Устройство", "Имя", "Температура"}, hw, new float[]{0.25f, 0.45f, 0.30f});
         }
+    }
+
+    /** По каждой политике cpufreq: {первое ядро, последнее ядро, макс. кГц, текущий лимит кГц или 0}. */
+    static List<long[]> cpuLimits() {
+        List<long[]> res = new ArrayList<>();
+        String base = "/sys/devices/system/cpu/cpufreq";
+        List<String> names = new ArrayList<>(java.util.Arrays.asList(Util.list(base)));
+        java.util.Collections.sort(names);
+        for (String pn : names) {
+            if (!pn.startsWith("policy")) continue;
+            String d = base + "/" + pn;
+            Long max = Util.readLong(d + "/cpuinfo_max_freq");
+            if (max == null || max <= 0) continue;
+            Long lim = Util.readLong(d + "/scaling_max_freq");
+            long first, last;
+            String rel = Util.read(d + "/related_cpus");
+            try {
+                String[] t = rel == null ? new String[0] : rel.trim().split("\\s+");
+                first = Long.parseLong(t.length > 0 ? t[0] : pn.substring(6));
+                last = Long.parseLong(t.length > 0 ? t[t.length - 1] : pn.substring(6));
+            } catch (Exception e) { continue; }
+            res.add(new long[]{first, last, max, lim == null ? 0 : lim});
+        }
+        return res;
     }
 
     /** Порог статуса «Лёгкий» из getThermalHeadroomThresholds; если его нет — 1.0 (порог «Сильный»). */

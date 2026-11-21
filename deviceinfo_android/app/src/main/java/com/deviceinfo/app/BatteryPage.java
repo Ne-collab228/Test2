@@ -381,14 +381,39 @@ public class BatteryPage implements Page {
         if (!Double.isNaN(measured)) {
             out.row("Измеренная ёмкость", Util.f("%.0f мА·ч (%d %s)", measured, meas.size(), meas.size() == 1 ? "замер" : "замеров"));
         } else out.row("Измеренная ёмкость", "Пока нет замеров", Section.MUTED);
-        double[] pr = BatteryMeter.progress();
-        if (pr[0] > 0) out.row("Идёт замер", Util.f("накоплено %.1f мА·ч за %.0f %% (нужно %d %%)", pr[1], pr[2], BatteryMeter.NEED_LEVELS), Section.INFO);
-        else out.row("Идёт замер", "Ожидание смены уровня заряда…", Section.MUTED);
-        if (BatteryWearService.running) {
-            out.row("Фоновый замер", "идёт (" + BatteryWearService.runCount + "/" + BatteryWearService.TARGET + ")…", Section.INFO);
+        PreciseMeter.Result precise = PreciseMeter.last(ctx);
+        if (precise != null) {
+            out.row("Точный замер", Util.f("%.0f мА·ч (±%.0f %%, разряд на %d %%)", precise.capacityMah,
+                    precise.accuracyPct, precise.delta), Section.OK);
+            out.row("  когда", new java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.US)
+                    .format(new java.util.Date(precise.ts)) + " · " + Util.duration(precise.durationMs / 1000.0)
+                    + " · " + precise.reason, Section.MUTED);
+        }
+        boolean svc = BatteryWearService.running;
+        if (svc && BatteryWearService.precise) {
+            PreciseMeter.State pst = BatteryWearService.preciseState;
+            double[] pp = PreciseMeter.progress(pst);
+            if (pp[0] > 0) out.bar("Идёт точный замер", Util.f("%.0f из %.0f %%", pp[1], pp[2]),
+                    pp[2] > 0 ? 100 * pp[1] / pp[2] : 0, Section.INFO);
+            out.row("  состояние", BatteryWearService.preciseProgressText(pst), Section.INFO);
+            if (pp[0] > 0 && pp[1] >= PreciseMeter.MIN_DELTA) out.action("precise_finish", "Завершить и посчитать");
+            out.action("meter_stop", "Отменить замер");
+        } else if (svc) {
+            double[] pr = BatteryMeter.progress();
+            if (pr[0] > 0) out.row("Идёт замер", Util.f("накоплено %.1f мА·ч за %.0f %% (нужно %d %%)", pr[1], pr[2], BatteryMeter.NEED_LEVELS), Section.INFO);
+            out.row("Быстрый замер", "идёт (" + BatteryWearService.runCount + "/" + BatteryWearService.TARGET + ")…", Section.INFO);
             out.action("meter_stop", "Остановить замер");
         } else {
-            out.action("meter_start", "Запустить замер в фоне", true);
+            double[] pr = BatteryMeter.progress();
+            if (pr[0] > 0) out.row("Идёт замер", Util.f("накоплено %.1f мА·ч за %.0f %% (нужно %d %%)", pr[1], pr[2], BatteryMeter.NEED_LEVELS), Section.INFO);
+            String ab = PreciseMeter.lastAbort(ctx);
+            if (ab != null) out.row("Последний точный замер", "прерван: " + ab, Section.WARN);
+            out.action("precise_start", "Точный замер (несколько часов)", true);
+            out.action("meter_start", "Быстрый замер (3 × 5 %)");
+            out.note("Точный замер: зарядите телефон до 80–100 %, отключите зарядку и нажмите кнопку. Пользуйтесь "
+                    + "телефоном как обычно — замер идёт в фоне, пока заряд не снизится на 50 % (или до 10 %). "
+                    + "Погрешность ≈ ±4 %. Если подключить зарядку раньше, результат посчитается, когда пройдено "
+                    + "≥ 20 % (≈ ±7 %), иначе замер прервётся. Быстрый замер: ±10–15 %.");
         }
         try {
             android.os.PowerManager pm = (android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
@@ -406,7 +431,12 @@ public class BatteryPage implements Page {
         if (!Double.isNaN(measured) && designMah > 0) {
             wear = Math.max(0, Math.min(100, 100 * (1 - measured / designMah)));
             healthPct = Math.max(0, Math.min(100, 100 * measured / designMah));
-            src = "замер";
+            src = "быстрый замер";
+        }
+        if (precise != null && designMah > 0) {
+            wear = Math.max(0, Math.min(100, 100 * (1 - precise.capacityMah / designMah)));
+            healthPct = Math.max(0, Math.min(100, 100 * precise.capacityMah / designMah));
+            src = Util.f("точный замер, ±%.0f %%", precise.accuracyPct);
         }
         if (soh != null) { healthPct = soh; wear = 100 - soh; src = "SOH"; }
         if (!Double.isNaN(healthPct)) {
@@ -422,10 +452,8 @@ public class BatteryPage implements Page {
             out.row("Износ по циклам (ориентир)", Util.f("≈ %.0f %%", cycWear), Section.level(cycWear, 20, 40));
             out.note("Ориентир: обычно ~20 % износа к 800 полным циклам. Точное значение прошивка не отдаёт.");
         }
-        out.note("Замер идёт, пока уровень заряда не изменится на 5 %. Кнопка «Запустить замер в фоне» "
-                + "считает в фоне (можно закрыть приложение и выключить экран), по готовности придёт уведомление. "
-                + "Чем больше замеров, тем точнее медиана. Замеры при зарядке менее точны: учитывается только ток "
-                + "батареи |I|, потери зарядного устройства не входят.");
+        out.note("Быстрый замер идёт отрезками по 5 % — точность ±10–15 %. Точный замер — один длинный разряд, "
+                + "±3–5 %. Здоровье считается по точному замеру, если он есть.");
         out.row("Единицы тока", currentUnit(curRaw));
         out.row("Единицы счётчика заряда", flag == 1 ? "мА·ч" : (flag == 0 ? "µA·ч" : "нет данных"));
         out.row("Платформа", magic ? "Honor MagicOS" : "Android");

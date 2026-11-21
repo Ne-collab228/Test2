@@ -179,8 +179,8 @@ public final class BatteryMeter {
         } catch (Throwable ignored) { }
     }
 
-    /** Читает уровень/статус/ток из системы и делает один шаг. Общая логика для приложения и службы. */
-    static synchronized Measurement sample(Context ctx, double designMah) {
+    /** Текущие {уровень %, статус, plugged, ток мА (NaN)} из системы или null. */
+    static double[] read(Context ctx) {
         try {
             Intent it = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
             if (it == null) return null;
@@ -195,11 +195,19 @@ public final class BatteryMeter {
                 BatteryManager bm = (BatteryManager) ctx.getSystemService(Context.BATTERY_SERVICE);
                 if (bm != null) {
                     int raw = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
-                    ma = BatteryPage.currentToMa(raw, -1, true);
+                    if (raw != Integer.MIN_VALUE) ma = BatteryPage.currentToMa(raw, -1, true);
                 }
             } catch (Throwable ignored) { }
-            return onSample(ctx, System.currentTimeMillis(), SystemClock.elapsedRealtime(), pct, status, plugged, ma, designMah);
+            return new double[]{pct, status, plugged, ma};
         } catch (Throwable ignored) { return null; }
+    }
+
+    /** Читает уровень/статус/ток из системы и делает один шаг. Общая логика для приложения и службы. */
+    static synchronized Measurement sample(Context ctx, double designMah) {
+        double[] r = read(ctx);
+        if (r == null) return null;
+        return onSample(ctx, System.currentTimeMillis(), SystemClock.elapsedRealtime(),
+                (int) r[0], (int) r[1], (int) r[2], r[3], designMah);
     }
 
     /** Один отсчёт (тестовая точка входа без Android-источников). Сохраняет завершённый замер. */

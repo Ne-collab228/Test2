@@ -243,13 +243,18 @@ public class MainActivity extends Activity {
 
     /** Нажатие кнопки-действия (UI-поток). */
     void onAction(String id) {
-        if ("meter_start".equals(id)) {
+        if ("meter_start".equals(id) || "precise_start".equals(id)) {
             if (Build.VERSION.SDK_INT >= 33
                     && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
                 try { requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2); } catch (Throwable ignored) { }
             }
-            try { startForegroundService(new Intent(this, BatteryWearService.class)); }
+            try { startForegroundService(new Intent(this, BatteryWearService.class)
+                    .putExtra(BatteryWearService.EXTRA_PRECISE, "precise_start".equals(id))); }
             catch (Throwable e) { toastStatus("Не удалось запустить замер: " + e.getMessage()); }
+        } else if ("precise_finish".equals(id)) {
+            try {
+                startService(new Intent(this, BatteryWearService.class).setAction(BatteryWearService.ACTION_FINISH));
+            } catch (Throwable ignored) { }
         } else if ("meter_stop".equals(id)) {
             try {
                 startService(new Intent(this, BatteryWearService.class).setAction(BatteryWearService.ACTION_STOP));

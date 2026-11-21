@@ -271,7 +271,7 @@ public class HonorX6cSimulationTest {
         bp.tick(ctx); bp.tick(ctx);
         String t = build(bp, ctx).toText();
         assertTrue(t, t.contains("Измеренная ёмкость"));
-        assertTrue(t, t.contains("Ожидание смены уровня"));
+        assertTrue(t, t.contains("[кнопка] Точный замер"));
     }
 
     /** Старые метрики стабильности удалены; новые разделы «Время работы» и «Потребление». */
