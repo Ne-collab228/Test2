@@ -62,6 +62,15 @@ public class BatteryPage implements Page {
      * работающим приложением (экран включён) потребляет десятки–тысячи мА, поэтому
      * |x| < 10000 — это мА, а |x| ≥ 10000 — µA. flag/magicOs оставлены для совместимости.
      */
+    /** Свойство относится к батарее: отдельное слово batt*, fuel*, *gauge* или fg (не nvcfg_, hfg_). */
+    static boolean isBatteryProp(String key) {
+        if (key == null) return false;
+        for (String t : key.toLowerCase(java.util.Locale.ROOT).split("[._]")) {
+            if (t.startsWith("batt") || t.startsWith("fuel") || t.contains("gauge") || t.equals("fg")) return true;
+        }
+        return false;
+    }
+
     static double currentToMa(int x, int flag, boolean magicOs) {
         if (!valid(x) || x == 0) return Double.NaN;
         return Math.abs(x) >= 10000 ? x / 1000.0 : x;
@@ -322,7 +331,8 @@ public class BatteryPage implements Page {
         hl.put(1, "Неизвестно"); hl.put(2, "Хорошее"); hl.put(3, "Перегрев"); hl.put(4, "Износ (неисправна)");
         hl.put(5, "Перенапряжение"); hl.put(6, "Сбой"); hl.put(7, "Переохлаждение");
         out.row("Состояние (здоровье)", ru(hl, healthI, "Неизвестно"), healthI == 2 ? Section.OK : Section.WARN);
-        out.row("Технология", tech);
+        boolean techOk = tech != null && !tech.trim().isEmpty() && !tech.trim().equalsIgnoreCase("unknown");
+        out.row("Технология", techOk ? tech : "Прошивка не сообщает (см. «Батарея (модель)»)", techOk ? 0 : Section.MUTED);
         out.row("Температура", temp == null ? null : Util.f("%.1f °C", temp), temp == null ? 0 : Section.temp(temp + 20));
         out.row("Напряжение", volt == null ? null : Util.f("%.3f В", volt));
         if (!Double.isNaN(curMa)) out.row("Ток", Util.f("%+.0f мА (%s)", curMa, curMa > 0 ? "+ в батарею" : "− из батареи"),
@@ -412,7 +422,8 @@ public class BatteryPage implements Page {
             out.row("Износ по циклам (ориентир)", Util.f("≈ %.0f %%", cycWear), Section.level(cycWear, 20, 40));
             out.note("Ориентир: обычно ~20 % износа к 800 полным циклам. Точное значение прошивка не отдаёт.");
         }
-        out.note("Для замера держите приложение открытым (экран включён), пока уровень заряда не изменится на 5 %. "
+        out.note("Замер идёт, пока уровень заряда не изменится на 5 %. Кнопка «Запустить замер в фоне» "
+                + "считает в фоне (можно закрыть приложение и выключить экран), по готовности придёт уведомление. "
                 + "Чем больше замеров, тем точнее медиана. Замеры при зарядке менее точны: учитывается только ток "
                 + "батареи |I|, потери зарядного устройства не входят.");
         out.row("Единицы тока", currentUnit(curRaw));
@@ -444,8 +455,7 @@ public class BatteryPage implements Page {
         }
         List<String[]> pr2 = new ArrayList<>();
         for (Map.Entry<String, String> e : new java.util.TreeMap<>(Util.allProps()).entrySet()) {
-            String k = e.getKey().toLowerCase();
-            if (k.contains("batt") || k.contains("fg_") || k.contains("gauge")) {
+            if (isBatteryProp(e.getKey())) {
                 if (pr2.size() >= 30) break;
                 pr2.add(new String[]{e.getKey(), e.getValue()});
             }

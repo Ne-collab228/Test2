@@ -113,35 +113,30 @@ public class ThermalPage implements Page {
                 if (Float.isNaN(h)) out.row("До троттлинга", "нет данных (HAL не отдаёт запас)", Section.MUTED);
                 else {
                     double pct = h * 100.0;
+                    java.util.Map<Integer, Float> th = null;
+                    if (Build.VERSION.SDK_INT >= 35) {
+                        try { th = pm.getThermalHeadroomThresholds(); } catch (Throwable ignored) { }
+                    }
+                    float light = lightThreshold(th);
                     out.bar("Тепловой запас (headroom)", Util.f("%.2f  (%.0f%%)", h, pct), pct,
-                            Section.level(pct, 85, 100));
+                            h >= 1.0f ? Section.CRIT : h >= light ? Section.WARN : Section.OK);
                     // AOSP ThermalManagerService: headroom = (T − T_severe + 30) / 30,
                     // где T — прогноз температуры датчика корпуса (SKIN) через 10 с,
-                    // T_severe — порог статуса «Сильный» из Thermal HAL. Значит, 1.0 — порог,
-                    // а каждые 0.1 — это 3 °C.
-                    double toLimit = (1.0 - h) * 30.0;
-                    out.row("До порога троттлинга", toLimit > 0
-                            ? Util.f("≈ %.0f °C (прогноз на 10 с)", toLimit)
-                            : Util.f("порог превышен на ≈ %.0f °C", -toLimit),
-                            toLimit > 3 ? Section.OK : Section.WARN);
-                    if (Build.VERSION.SDK_INT >= 35) {
-                        try {
-                            java.util.Map<Integer, Float> th = pm.getThermalHeadroomThresholds();
-                            if (th != null && !th.isEmpty()) {
-                                java.util.List<String[]> thRows = new java.util.ArrayList<>();
-                                for (java.util.Map.Entry<Integer, Float> e : new java.util.TreeMap<>(th).entrySet()) {
-                                    int k = e.getKey();
-                                    thRows.add(new String[]{k >= 0 && k < STATUS.length ? STATUS[k] : "" + k,
-                                            Util.f("%.2f", e.getValue())});
-                                }
-                                out.table(new String[]{"Статус", "Порог headroom"}, thRows, new float[]{0.6f, 0.4f});
-                            }
-                        } catch (Throwable ignored) { }
-                    }
+                    // T_severe — порог статуса «Сильный» из Thermal HAL. 1.0 — «Сильный»,
+                    // каждые 0.1 — это 3 °C. Лёгкое ограничение начинается раньше — с порога LIGHT.
+                    out.row("До лёгкого троттлинга", toLimitText(h, light),
+                            h >= light ? Section.WARN : (light - h) * 30 > 3 ? Section.OK : Section.WARN);
+                    out.row("До сильного троттлинга", toLimitText(h, 1.0f),
+                            h >= 1.0f ? Section.CRIT : (1.0f - h) * 30 > 3 ? Section.OK : Section.WARN);
+                    List<String[]> thRows = thresholdRows(th);
+                    if (!thRows.isEmpty())
+                        out.table(new String[]{"Статус", "Порог headroom"}, thRows, new float[]{0.6f, 0.4f});
                     out.note("Запас считает сама система (Thermal HAL): у неё есть доступ ко всем датчикам, "
                             + "в том числе к закрытым для приложений. Берётся датчик корпуса (SKIN), а не "
-                            + "процессора: 1.00 — порог, с которого Android начинает снижать частоты, "
-                            + "шаг 0.10 ≈ 3 °C. Саму температуру система приложениям не отдаёт.");
+                            + "процессора, и прогноз на 10 с вперёд. 1.00 — статус «Сильный», шаг 0.10 ≈ 3 °C. "
+                            + "Лёгкое снижение частот начинается раньше — с порога «Лёгкий»"
+                            + (Float.isNaN(light) || light >= 1.0f ? "" : Util.f(" (на этом телефоне %.2f)", light))
+                            + ". Саму температуру система приложениям не отдаёт.");
                 }
             }
         } catch (Throwable t) {
@@ -173,6 +168,39 @@ public class ThermalPage implements Page {
             out.header("hwmon");
             out.table(new String[]{"Устройство", "Имя", "Температура"}, hw, new float[]{0.25f, 0.45f, 0.30f});
         }
+    }
+
+    /** Порог статуса «Лёгкий» из getThermalHeadroomThresholds; если его нет — 1.0 (порог «Сильный»). */
+    static float lightThreshold(java.util.Map<Integer, Float> th) {
+        if (th != null) {
+            Float v = th.get(1);
+            if (v != null && !Float.isNaN(v) && v > 0 && v <= 1.0f) return v;
+        }
+        return 1.0f;
+    }
+
+    /** Сколько °C осталось до порога (1 единица headroom = 30 °C). */
+    static String toLimitText(float h, float limit) {
+        double d = (limit - h) * 30.0;
+        if (d > 0.05) return Util.f("≈ %.1f °C (прогноз на 10 с)", d);
+        if (d > -0.05) return "на пороге";
+        return Util.f("порог превышен на ≈ %.1f °C", -d);
+    }
+
+    /** Таблица порогов; «Сильный» по определению равен 1.00, система его часто не присылает. */
+    static List<String[]> thresholdRows(java.util.Map<Integer, Float> th) {
+        List<String[]> rows = new ArrayList<>();
+        if (th == null || th.isEmpty()) return rows;
+        java.util.TreeMap<Integer, Float> m = new java.util.TreeMap<>(th);
+        if (!m.containsKey(3)) m.put(3, 1.0f);
+        for (java.util.Map.Entry<Integer, Float> e : m.entrySet()) {
+            int k = e.getKey();
+            if (k <= 0) continue;
+            Float v = e.getValue();
+            if (v == null || Float.isNaN(v)) continue;
+            rows.add(new String[]{k < STATUS.length ? STATUS[k] : "" + k, Util.f("%.2f", v)});
+        }
+        return rows;
     }
 
     private static synchronized float headroom(PowerManager pm) {

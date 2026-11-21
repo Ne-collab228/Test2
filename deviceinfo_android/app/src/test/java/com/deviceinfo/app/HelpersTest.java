@@ -278,4 +278,28 @@ public class HelpersTest {
         assertTrue(o, o.contains("Bluetooth LE: Да"));
         assertTrue(o, o.contains("Bluetooth: Да"));
     }
+
+    @org.junit.Test public void thermal_lightThresholdFromRealX6c() {
+        java.util.Map<Integer, Float> th = new java.util.HashMap<>();
+        th.put(1, 0.80f); th.put(2, 0.90f); th.put(4, 1.17f); th.put(5, 1.30f); th.put(6, 4.43f);
+        org.junit.Assert.assertEquals(0.80f, ThermalPage.lightThreshold(th), 1e-6);
+        org.junit.Assert.assertEquals(1.0f, ThermalPage.lightThreshold(null), 1e-6);
+        // реальный отчёт: запас 0.76 -> до лёгкого ≈ 1.2 °C, до сильного ≈ 7.2 °C
+        org.junit.Assert.assertTrue(ThermalPage.toLimitText(0.76f, 0.80f).contains("1.2"));
+        org.junit.Assert.assertTrue(ThermalPage.toLimitText(0.76f, 1.0f).contains("7.2"));
+        org.junit.Assert.assertTrue(ThermalPage.toLimitText(0.85f, 0.80f).startsWith("порог превышен"));
+        java.util.List<String[]> rows = ThermalPage.thresholdRows(th);
+        org.junit.Assert.assertEquals(6, rows.size());
+        org.junit.Assert.assertEquals("Сильный", rows.get(2)[0]);
+        org.junit.Assert.assertEquals(Util.f("%.2f", 1.0), rows.get(2)[1]);
+    }
+
+    @org.junit.Test public void battery_propFilterSkipsCarrierConfig() {
+        org.junit.Assert.assertTrue(BatteryPage.isBatteryProp("init.svc.fuelgauged"));
+        org.junit.Assert.assertTrue(BatteryPage.isBatteryProp("msc.config.BatteryLevel_job_allowed"));
+        org.junit.Assert.assertTrue(BatteryPage.isBatteryProp("persist.device_config.aconfig_flags.storage_native_boot.low_battery_level"));
+        org.junit.Assert.assertFalse(BatteryPage.isBatteryProp("persist.sys.nvcfg_file0"));
+        org.junit.Assert.assertFalse(BatteryPage.isBatteryProp("ro.vendor.pq.mtk_hfg_support"));
+        org.junit.Assert.assertFalse(BatteryPage.isBatteryProp("sys.nvcfg_errorno0"));
+    }
 }
