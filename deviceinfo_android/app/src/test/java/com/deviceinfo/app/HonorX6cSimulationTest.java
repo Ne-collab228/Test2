@@ -235,7 +235,43 @@ public class HonorX6cSimulationTest {
         t = s.toText();
         System.out.println("BATTERY REAL (static counter):\n" + t);
         assertTrue("static counter detected\n" + t, t.contains("заглушка"));
-        assertTrue("remaining by level\n" + t, t.contains("Остаток (по уровню)"));
+        assertTrue("current charge by level\n" + t, t.contains("≈ 2650 мА·ч"));
+    }
+
+    /** Заглушка счётчика распознаётся с первого построения: 3500 мА·ч при 52 % => 6730 > 1.15 × 5300. */
+    @Test public void battery_stubDetectedImmediately() throws Exception {
+        setup("sysroot");
+        realBattery(52, 3500000);
+        String t = build(new BatteryPage(), ctx).toText();
+        System.out.println("BATTERY STUB:\n" + t);
+        assertTrue(t, t.contains("заглушка"));
+        assertTrue(t, t.contains("≈ 2756 мА·ч"));
+        assertTrue(t, t.contains("Текущий заряд"));
+        assertTrue(t, t.contains("Счётчик контроллера: 3500 мА·ч"));
+    }
+
+    /** Идентификация батареи для NIC-*. */
+    @Test public void battery_identity() throws Exception {
+        setup("sysroot");
+        realBattery(52, 3500000);
+        String t = build(new BatteryPage(), ctx).toText();
+        assertTrue(t, t.contains("Батарея (модель)"));
+        assertTrue(t, t.contains("Li-Po"));
+        assertTrue(t, t.contains("5300"));
+        assertTrue(t, t.contains("по спецификации"));
+        assertTrue(t, t.contains("3.87"));
+    }
+
+    /** Живой тик при разряде не падает и не создаёт замер без смены уровня. */
+    @Test public void battery_tickSafe() throws Exception {
+        setup("sysroot");
+        BatteryMeter.reset();
+        realBattery(52, 3500000);
+        Page bp = new BatteryPage();
+        bp.tick(ctx); bp.tick(ctx);
+        String t = build(bp, ctx).toText();
+        assertTrue(t, t.contains("Измеренная ёмкость"));
+        assertTrue(t, t.contains("Ожидание смены уровня"));
     }
 
     /** С первого обновления статус «разряжается» + положительный ток не должен показываться как «+ в батарею / зарядка». */

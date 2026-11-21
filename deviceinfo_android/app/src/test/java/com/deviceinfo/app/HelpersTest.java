@@ -130,4 +130,76 @@ public class HelpersTest {
         assertTrue(CpuInfo.coreName(0x41, 0xd0a).contains("A75"));
         assertNotNull(CpuInfo.implementerName(0x41));
     }
+
+    @Test public void sensorLive_formatting() {
+        assertEquals("портрет", SensorLive.orientationName(0));
+        assertEquals("альбомная вправо", SensorLive.orientationName(3));
+        assertTrue(SensorLive.orientationName(9).contains("9"));
+        assertTrue(SensorLive.format(android.hardware.Sensor.TYPE_ACCELEROMETER, new float[]{0, 0, 9.81f}, 20, 1).contains("9.81"));
+        assertTrue(SensorLive.format(android.hardware.Sensor.TYPE_PROXIMITY, new float[]{0}, 5, 1).contains("близко"));
+        assertTrue(SensorLive.format(android.hardware.Sensor.TYPE_PROXIMITY, new float[]{5}, 5, 1).contains("далеко"));
+        assertEquals("120 лк", SensorLive.format(android.hardware.Sensor.TYPE_LIGHT, new float[]{120}, 100, 1));
+    }
+
+    @Test public void battery_stubDetection() {
+        assertTrue(BatteryPage.implausibleCounter(3500, 52, 5300));
+        assertFalse(BatteryPage.implausibleCounter(2800, 52, 5300));
+        assertFalse(BatteryPage.implausibleCounter(3500, 52, 0));
+        assertTrue(BatteryPage.implausibleCounter(300, 52, 5300));
+    }
+
+    @Test public void battery_meter_discharge600mA() {
+        BatteryMeter.MeterState s = new BatteryMeter.MeterState();
+        double design = 5300, ma = 600;
+        double msPerLevel = design * 0.01 / ma * 3600000.0;
+        BatteryMeter.Measurement m = null;
+        long t = 0;
+        double lvlExact = 80.5; // уровень падает на 1 % каждые msPerLevel
+        long end = (long) (msPerLevel * 8);
+        for (; t <= end && m == null; t += 1500) {
+            int lvl = (int) Math.floor(80.9999 - t / msPerLevel);
+            m = BatteryMeter.step(s, t, lvl, -1, -ma, design);
+        }
+        assertNotNull("measurement after >=5 levels", m);
+        assertEquals(5300, m.capacityMah, 5300 * 0.03);
+        assertEquals(5, m.dLevel);
+    }
+
+    @Test public void battery_meter_abortsOnGap() {
+        BatteryMeter.MeterState s = new BatteryMeter.MeterState();
+        long t = 0;
+        BatteryMeter.step(s, t, 80, -1, -600, 5300);
+        t += 1500; BatteryMeter.step(s, t, 79, -1, -600, 5300);
+        assertTrue(s.active);
+        t += 1500; BatteryMeter.step(s, t, 79, -1, -600, 5300);
+        t += 30000; BatteryMeter.step(s, t, 79, -1, -600, 5300);
+        assertFalse(s.active);
+        assertEquals("gap", s.lastAbort);
+        // уровень сменился сразу после паузы — граница неточная, сессия не стартует
+        t += 1500; BatteryMeter.step(s, t, 78, -1, -600, 5300);
+        assertFalse(s.active);
+        t += 1500; BatteryMeter.step(s, t, 77, -1, -600, 5300);
+        assertTrue(s.active);
+        // смена направления прерывает
+        t += 1500; BatteryMeter.step(s, t, 77, 1, 600, 5300);
+        assertFalse(s.active);
+    }
+
+    @Test public void battery_meter_rejectsImplausibleAndMedian() {
+        BatteryMeter.MeterState s = new BatteryMeter.MeterState();
+        long t = 0; BatteryMeter.Measurement m = null;
+        // 5 % за 1 мин при 600 мА = ~ 50 мА·ч => 1000 мА·ч, отвергается (< 0.4 × 5300)
+        int lvl = 80; BatteryMeter.step(s, t, lvl, -1, -600, 5300);
+        for (int i = 0; i < 60 * 2 * 7 && m == null; i++) {
+            t += 500; if (i % 80 == 79) lvl--;
+            BatteryMeter.step(s, t, lvl, -1, -600, 5300);
+        }
+        assertNull(m);
+        java.util.List<BatteryMeter.Measurement> l = new java.util.ArrayList<>();
+        l.add(new BatteryMeter.Measurement(5000, 0, 5, -1));
+        l.add(new BatteryMeter.Measurement(5200, 0, 5, -1));
+        l.add(new BatteryMeter.Measurement(5100, 0, 5, -1));
+        assertEquals(5100, BatteryMeter.medianCapacity(l), 0);
+        assertTrue(Double.isNaN(BatteryMeter.medianCapacity(new java.util.ArrayList<>())));
+    }
 }

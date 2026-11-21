@@ -1,11 +1,13 @@
 package com.deviceinfo.app;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
-import android.graphics.Color;
+import android.content.pm.PackageManager;
+import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.ClipDrawable;
-import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.os.Build;
@@ -15,7 +17,7 @@ import android.os.Looper;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -24,7 +26,9 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -33,22 +37,39 @@ public class MainActivity extends Activity {
             ROW1 = 0xFF1D2127, ROW2 = 0xFF23282F, ACCENT = 0xFFE53935, TEXT = 0xFFECEFF1,
             MUTED = 0xFF9AA5B1, OKC = 0xFF43A047, WARNC = 0xFFFB8C00, INFOC = 0xFF1E88E5,
             BTN = 0xFF2F353E, BAR_BG = 0xFF33383F;
+    static final long PERIOD = 1500;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
+    /** Сборка видимой вкладки. */
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    /** Фоновые замеры (tick) и предварительная подготовка остальных вкладок. */
+    private final ExecutorService background = Executors.newSingleThreadExecutor();
     private final List<Page> pages = Pages.create();
     private final List<Button> tabButtons = new ArrayList<>();
+    /** Последний собранный результат каждой вкладки — показывается мгновенно при переключении. */
+    private final Map<Integer, Section> cache = new HashMap<>();
     private LinearLayout content;
     private ScrollView scroll;
     private TextView status;
     private int current = 0;
-    private boolean resumed, busy;
+    private boolean resumed;
+    private volatile boolean busy;
+
+    /** Текущая отрисовка: элементы и их View (для обновления «на месте»). */
+    private String shownSignature;
+    private final List<Object> holders = new ArrayList<>();
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             if (!resumed) return;
             if (pages.get(current).live()) refresh();
-            ui.postDelayed(this, 1500);
+            final Context app = getApplicationContext();
+            background.execute(() -> {
+                for (Page p : pages) {
+                    try { synchronized (p) { p.tick(app); } } catch (Throwable ignored) { }
+                }
+            });
+            ui.postDelayed(this, PERIOD);
         }
     };
 
@@ -58,22 +79,37 @@ public class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
-        getWindow().setStatusBarColor(HEADER);
-        getWindow().setNavigationBarColor(BG);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(BG);
+        root.setBackgroundColor(HEADER);
+        // Android 15 рисует приложение под строкой состояния и вырезом камеры:
+        // отодвигаем содержимое на размер системных панелей.
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int l, t, r, btm;
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets in = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                l = in.left; t = in.top; r = in.right; btm = in.bottom;
+            } else {
+                l = insets.getSystemWindowInsetLeft(); t = insets.getSystemWindowInsetTop();
+                r = insets.getSystemWindowInsetRight(); btm = insets.getSystemWindowInsetBottom();
+            }
+            v.setPadding(l, t, r, btm);
+            return Build.VERSION.SDK_INT >= 30 ? WindowInsets.CONSUMED : insets.consumeSystemWindowInsets();
+        });
 
         // Шапка
         LinearLayout head = new LinearLayout(this);
         head.setBackgroundColor(HEADER);
-        head.setPadding(dp(12), dp(10), dp(8), dp(10));
+        head.setPadding(dp(12), dp(8), dp(8), dp(8));
         head.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(this);
-        title.setText(Build.MANUFACTURER.toUpperCase() + " " + Build.MODEL);
+        String market = Util.firstNonEmpty(Util.prop("ro.product.marketname"), Util.prop("ro.config.marketing_name"));
+        title.setText(market != null ? market + "  ·  " + Build.MODEL : Build.MANUFACTURER.toUpperCase() + " " + Build.MODEL);
         title.setTextColor(TEXT);
         title.setTextSize(17);
         title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setSingleLine(true);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         Button report = makeButton("Отчёт");
         report.setOnClickListener(v -> shareReport());
@@ -102,6 +138,7 @@ public class MainActivity extends Activity {
         root.addView(hs);
 
         scroll = new ScrollView(this);
+        scroll.setBackgroundColor(BG);
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(0, 0, 0, dp(16));
@@ -117,6 +154,25 @@ public class MainActivity extends Activity {
 
         setContentView(root);
         switchTab(0);
+        prewarm();
+    }
+
+    /** Заранее собирает все вкладки в фоне, чтобы переключение было мгновенным. */
+    void prewarm() {
+        final Context app = getApplicationContext();
+        for (int i = 0; i < pages.size(); i++) {
+            final int idx = i;
+            background.execute(() -> {
+                if (cache.containsKey(idx)) return;
+                Page pg = pages.get(idx);
+                Section s = buildSafe(pg, app);
+                // Невидимая вкладка не должна держать ресурсы (например, слушатели датчиков).
+                if (idx != current) {
+                    try { synchronized (pg) { pg.onHide(app); } } catch (Throwable ignored) { }
+                }
+                ui.post(() -> { if (!cache.containsKey(idx)) cache.put(idx, s); });
+            });
+        }
     }
 
     Button makeButton(String text) {
@@ -138,14 +194,38 @@ public class MainActivity extends Activity {
     }
 
     void switchTab(int idx) {
+        if (idx != current) {
+            final Page old = pages.get(current);
+            final Context app = getApplicationContext();
+            worker.execute(() -> { try { synchronized (old) { old.onHide(app); } } catch (Throwable ignored) { } });
+        }
         current = idx;
         for (int i = 0; i < tabButtons.size(); i++) {
             GradientDrawable bg = (GradientDrawable) tabButtons.get(i).getBackground();
             bg.setColor(i == idx ? ACCENT : BTN);
         }
-        content.removeAllViews();
+        shownSignature = null;
+        Section cached = cache.get(idx);
+        if (cached != null) {
+            render(cached, false);
+        } else {
+            content.removeAllViews();
+            holders.clear();
+            TextView wait = text("Загрузка…", MUTED, 14);
+            wait.setPadding(dp(12), dp(16), dp(12), dp(16));
+            content.addView(wait);
+        }
         scroll.scrollTo(0, 0);
+        maybeAskPermissions(pages.get(idx));
         refresh();
+    }
+
+    /** Шагомеру на Android 10+ нужно разрешение «Физическая активность». */
+    void maybeAskPermissions(Page p) {
+        if (!(p instanceof SensorsPage) || Build.VERSION.SDK_INT < 29) return;
+        if (checkSelfPermission("android.permission.ACTIVITY_RECOGNITION") != PackageManager.PERMISSION_GRANTED) {
+            try { requestPermissions(new String[]{"android.permission.ACTIVITY_RECOGNITION"}, 1); } catch (Throwable ignored) { }
+        }
     }
 
     void refresh() {
@@ -153,19 +233,23 @@ public class MainActivity extends Activity {
         busy = true;
         final int idx = current;
         final Page page = pages.get(idx);
+        final Context app = getApplicationContext();
         worker.execute(() -> {
-            Section s = buildSafe(page);
+            Section s = buildSafe(page, app);
             ui.post(() -> {
                 busy = false;
-                if (idx == current && !isFinishing()) render(s);
+                cache.put(idx, s);
+                if (idx == current && !isFinishing()) render(s, true);
             });
         });
     }
 
-    Section buildSafe(Page page) {
+    static Section buildSafe(Page page, Context ctx) {
         Section s = new Section();
+        // Вкладку могут собирать одновременно видимый поток и фоновая подготовка:
+        // сборка одной вкладки идёт строго по очереди (у вкладок есть состояние между замерами).
         try {
-            page.build(getApplicationContext(), s);
+            synchronized (page) { page.build(ctx, s); }
         } catch (Throwable e) {
             s.header("Ошибка");
             s.row("Исключение", e.getClass().getSimpleName() + ": " + e.getMessage(), Section.CRIT);
@@ -184,23 +268,94 @@ public class MainActivity extends Activity {
         }
     }
 
-    void render(Section s) {
+    /** Структура вкладки: если она не изменилась, значения обновляются в уже созданных View. */
+    static String signature(Section s) {
+        StringBuilder sb = new StringBuilder();
+        for (Section.Item it : s.items) {
+            sb.append(it.type).append('|');
+            if (it.type == 0 || it.type == 1 || it.type == 2) sb.append(it.key);
+            if (it.type == 4) sb.append(it.rows.size()).append('x').append(it.headers.length);
+            sb.append('\n');
+        }
+        return sb.toString();
+    }
+
+    // Держатели View для обновления на месте
+    static final class RowH { TextView value; }
+    static final class BarH { TextView value; ProgressBar pb; GradientDrawable fill; }
+    static final class NoteH { TextView text; }
+    static final class TableH { List<TextView[]> cells = new ArrayList<>(); }
+
+    void render(Section s, boolean live) {
+        String sig = signature(s);
+        if (live && sig.equals(shownSignature) && holders.size() == s.items.size()) {
+            update(s);
+        } else {
+            rebuild(s);
+            shownSignature = sig;
+        }
+        status.setText("Обновлено: " + new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                .format(new java.util.Date()) + (pages.get(current).live() ? "  •  авто 1.5 с" : ""));
+    }
+
+    void update(Section s) {
+        for (int i = 0; i < s.items.size(); i++) {
+            Section.Item it = s.items.get(i);
+            Object h = holders.get(i);
+            switch (it.type) {
+                case 1: {
+                    RowH r = (RowH) h;
+                    setText(r.value, it.value);
+                    r.value.setTextColor(color(it.color));
+                    break;
+                }
+                case 2: {
+                    BarH bh = (BarH) h;
+                    setText(bh.value, it.value);
+                    bh.pb.setProgress((int) (it.pct * 10));
+                    bh.fill.setColor(it.color == Section.NORMAL ? INFOC : color(it.color));
+                    break;
+                }
+                case 3: {
+                    NoteH n = (NoteH) h;
+                    setText(n.text, it.value);
+                    n.text.setTextColor(color(it.color));
+                    break;
+                }
+                case 4: {
+                    TableH th = (TableH) h;
+                    for (int r = 0; r < it.rows.size() && r < th.cells.size(); r++) {
+                        String[] row = it.rows.get(r);
+                        TextView[] tv = th.cells.get(r);
+                        for (int c = 0; c < row.length && c < tv.length; c++)
+                            setText(tv[c], row[c] == null ? "—" : row[c]);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    static void setText(TextView t, String s) {
+        if (!s.contentEquals(t.getText())) t.setText(s);
+    }
+
+    void rebuild(Section s) {
         int y = scroll.getScrollY();
         content.removeAllViews();
+        holders.clear();
         boolean odd = false;
         for (Section.Item it : s.items) {
             switch (it.type) {
                 case 0: {
                     View gap = new View(this);
                     content.addView(gap, new LinearLayout.LayoutParams(-1, dp(6)));
-                    TextView h = new TextView(this);
-                    h.setText(it.key);
-                    h.setTextColor(TEXT);
+                    TextView h = text(it.key, TEXT, 15);
                     h.setTypeface(Typeface.DEFAULT_BOLD);
-                    h.setTextSize(15);
                     h.setBackgroundColor(SECTION);
                     h.setPadding(dp(12), dp(8), dp(12), dp(8));
                     content.addView(h);
+                    holders.add(null);
                     odd = false;
                     break;
                 }
@@ -214,6 +369,9 @@ public class MainActivity extends Activity {
                     v.setTextIsSelectable(true);
                     r.addView(v, new LinearLayout.LayoutParams(0, -2, 0.55f));
                     content.addView(r);
+                    RowH rh = new RowH();
+                    rh.value = v;
+                    holders.add(rh);
                     break;
                 }
                 case 2: {
@@ -224,26 +382,30 @@ public class MainActivity extends Activity {
                     r.setPadding(dp(12), dp(6), dp(12), dp(8));
                     LinearLayout top = new LinearLayout(this);
                     top.addView(text(it.key, MUTED, 14), new LinearLayout.LayoutParams(0, -2, 0.45f));
-                    top.addView(text(it.value, TEXT, 14), new LinearLayout.LayoutParams(0, -2, 0.55f));
+                    TextView val = text(it.value, TEXT, 14);
+                    top.addView(val, new LinearLayout.LayoutParams(0, -2, 0.55f));
                     r.addView(top);
                     ProgressBar pb = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
                     pb.setMax(1000);
-                    pb.setProgress((int) (it.pct * 10));
                     GradientDrawable back = new GradientDrawable();
                     back.setColor(BAR_BG);
                     back.setCornerRadius(dp(3));
                     GradientDrawable fill = new GradientDrawable();
                     fill.setColor(it.color == Section.NORMAL ? INFOC : color(it.color));
                     fill.setCornerRadius(dp(3));
-                    LayerDrawable ld = new LayerDrawable(new android.graphics.drawable.Drawable[]{
+                    LayerDrawable ld = new LayerDrawable(new Drawable[]{
                             back, new ClipDrawable(fill, Gravity.START, ClipDrawable.HORIZONTAL)});
                     ld.setId(0, android.R.id.background);
                     ld.setId(1, android.R.id.progress);
                     pb.setProgressDrawable(ld);
+                    pb.setProgress((int) (it.pct * 10));
                     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(6));
                     lp.topMargin = dp(5);
                     r.addView(pb, lp);
                     content.addView(r);
+                    BarH bh = new BarH();
+                    bh.value = val; bh.pb = pb; bh.fill = fill;
+                    holders.add(bh);
                     break;
                 }
                 case 3: {
@@ -251,25 +413,32 @@ public class MainActivity extends Activity {
                     n.setPadding(dp(12), dp(6), dp(12), dp(6));
                     n.setTextIsSelectable(true);
                     content.addView(n);
+                    NoteH nh = new NoteH();
+                    nh.text = n;
+                    holders.add(nh);
                     break;
                 }
                 case 4: {
-                    content.addView(tableRow(it.headers, it.ratios, SECTION, true));
+                    TableH th = new TableH();
+                    content.addView(tableRow(it.headers, it.ratios, SECTION, true, null));
                     boolean o = false;
                     for (String[] row : it.rows) {
                         o = !o;
-                        content.addView(tableRow(row, it.ratios, o ? ROW1 : ROW2, false));
+                        TextView[] cells = new TextView[row.length];
+                        content.addView(tableRow(row, it.ratios, o ? ROW1 : ROW2, false, cells));
+                        th.cells.add(cells);
                     }
+                    holders.add(th);
                     break;
                 }
+                default:
+                    holders.add(null);
             }
         }
         scroll.post(() -> scroll.scrollTo(0, y));
-        status.setText("Обновлено: " + new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
-                .format(new java.util.Date()) + (pages.get(current).live() ? "  •  авто 1.5 с" : ""));
     }
 
-    LinearLayout tableRow(String[] cells, float[] ratios, int bg, boolean head) {
+    LinearLayout tableRow(String[] cells, float[] ratios, int bg, boolean head, TextView[] out) {
         LinearLayout r = new LinearLayout(this);
         r.setBackgroundColor(bg);
         r.setPadding(dp(8), dp(5), dp(8), dp(5));
@@ -279,6 +448,7 @@ public class MainActivity extends Activity {
             if (head) t.setTypeface(Typeface.DEFAULT_BOLD);
             t.setPadding(dp(4), 0, dp(4), 0);
             r.addView(t, new LinearLayout.LayoutParams(0, -2, w));
+            if (out != null) out[i] = t;
         }
         return r;
     }
@@ -293,13 +463,14 @@ public class MainActivity extends Activity {
 
     void shareReport() {
         status.setText("Собираю отчёт…");
+        final Context app = getApplicationContext();
         worker.execute(() -> {
             StringBuilder sb = new StringBuilder();
             sb.append("Device Info — отчёт\n").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
                     .append(" (").append(Build.DEVICE).append(")\n");
             for (Page p : pages) {
                 sb.append("\n===== ").append(p.title()).append(" =====\n");
-                sb.append(buildSafe(p).toText());
+                sb.append(buildSafe(p, app).toText());
             }
             String text = sb.toString();
             ui.post(() -> {
@@ -317,17 +488,21 @@ public class MainActivity extends Activity {
         super.onResume();
         resumed = true;
         ui.removeCallbacks(tick);
-        ui.postDelayed(tick, 1500);
+        ui.post(tick);
     }
 
     @Override protected void onPause() {
         super.onPause();
         resumed = false;
         ui.removeCallbacks(tick);
+        final Page p = pages.get(current);
+        final Context app = getApplicationContext();
+        worker.execute(() -> { try { synchronized (p) { p.onHide(app); } } catch (Throwable ignored) { } });
     }
 
     @Override protected void onDestroy() {
         super.onDestroy();
         worker.shutdownNow();
+        background.shutdownNow();
     }
 }

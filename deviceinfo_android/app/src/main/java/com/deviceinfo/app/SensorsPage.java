@@ -13,7 +13,9 @@ import java.util.TreeMap;
 public class SensorsPage implements Page {
     @Override public String title() { return "Датчики"; }
 
-    @Override public boolean live() { return false; }
+    @Override public boolean live() { return true; }
+
+    @Override public void onHide(Context ctx) { SensorLive.stop(); }
 
     /** Максимальная частота (Гц) по минимальной задержке (мкс); null если не определена. */
     public static String rateHz(int minDelayUs) {
@@ -25,8 +27,10 @@ public class SensorsPage implements Page {
     @Override public void build(Context ctx, Section out) {
         SensorManager sm = (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE);
         List<Sensor> list = sm.getSensorList(Sensor.TYPE_ALL);
+        if (list.isEmpty()) { out.header("Датчики (0)"); out.note("Датчики не найдены."); return; }
+        SensorLive.ensureRegistered(sm, list);
+        buildLive(ctx, out, list);
         out.header("Датчики (" + list.size() + ")");
-        if (list.isEmpty()) { out.note("Датчики не найдены."); return; }
 
         Map<String, Integer> counts = new TreeMap<>();
         for (Sensor s : list) {
@@ -62,6 +66,41 @@ public class SensorsPage implements Page {
             out.row("  Динамический", s.isDynamicSensor() ? "Да" : "Нет");
             out.row("  FIFO", s.getFifoMaxEventCount() + " событий");
         }
+    }
+
+    private void buildLive(Context ctx, Section out, List<Sensor> list) {
+        out.header("Показания (в реальном времени)");
+        long now = android.os.SystemClock.elapsedRealtime();
+        long started = SensorLive.startedMs();
+        Map<String, Integer> labelCount = new java.util.HashMap<>();
+        for (Sensor s : list) {
+            String l = SensorLive.typeLabel(s.getType(), s.getName());
+            Integer c = labelCount.get(l);
+            labelCount.put(l, c == null ? 1 : c + 1);
+        }
+        java.util.Set<Integer> types = new java.util.HashSet<>();
+        for (Sensor s : list) {
+            types.add(s.getType());
+            String label = SensorLive.typeLabel(s.getType(), s.getName());
+            if (labelCount.get(label) > 1 && !label.equals(s.getName())) label += " (" + s.getName() + ")";
+            if (SensorLive.oneShot(s)) { out.row(label, "срабатывает по событию", Section.MUTED); continue; }
+            SensorLive.Reading r = SensorLive.READINGS.get(SensorLive.key(s));
+            float[] v = r == null ? null : r.values;
+            if (v == null) {
+                if (SensorLive.permissionMissing(ctx, s.getType()) && started > 0 && now - started > 5000)
+                    out.row(label, "нужно разрешение «Физическая активность»", Section.WARN);
+                else out.row(label, "ожидание данных…", Section.MUTED);
+                continue;
+            }
+            String txt = SensorLive.format(s.getType(), v, s.getMaximumRange(), r.count);
+            if (r.rateHz > 0) txt += " · " + Util.f("%.0f Гц", r.rateHz);
+            out.row(label, txt);
+        }
+        StringBuilder miss = new StringBuilder();
+        if (!types.contains(Sensor.TYPE_GYROSCOPE)) miss.append("гироскоп");
+        if (!types.contains(Sensor.TYPE_MAGNETIC_FIELD)) miss.append(miss.length() > 0 ? ", " : "").append("компас/магнитометр");
+        if (!types.contains(Sensor.TYPE_PRESSURE)) miss.append(miss.length() > 0 ? ", " : "").append("барометр");
+        if (miss.length() > 0) out.note("Нет в устройстве: " + miss + ".");
     }
 
     private static String shortType(Sensor s) {

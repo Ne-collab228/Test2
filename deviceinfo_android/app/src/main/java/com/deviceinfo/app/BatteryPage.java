@@ -113,7 +113,31 @@ public class BatteryPage implements Page {
     private double[] designCache;   // {mAh}
     private String designSrc;
 
-    private void design(Context ctx) {
+    @Override public void tick(Context ctx) {
+        design(ctx);
+        BatteryMeter.tick(ctx, designCache[0]);
+    }
+
+    /**
+     * Счётчик заряда — заглушка прошивки? (b) вывод полной ёмкости counter*100/level выходит за
+     * [0.3; 1.15] паспортной (только при уровне ≥ 10 %, чтобы не ловить квантование);
+     * (c) «круглое» значение (кратно 100 мА·ч) без (b) заглушкой не считается.
+     */
+    static boolean implausibleCounter(double counterMah, double levelPct, double designMah) {
+        if (Double.isNaN(counterMah) || designMah <= 0 || Double.isNaN(levelPct) || levelPct < 10) return false;
+        double perFull = counterMah * 100.0 / levelPct;
+        boolean outOfRange = perFull > 1.15 * designMah || perFull < 0.3 * designMah;
+        return outOfRange; // круглое значение (кратно 100 мА·ч) не снимает подозрение, а лишь подтверждает его
+    }
+
+    static String spec(String model) {
+        String m = model == null ? "" : model.toUpperCase();
+        if (m.startsWith("NIC-")) return "Литий-полимерная (Li-Po), 5300 мА·ч (тип.), 35 Вт SuperCharge";
+        if (m.startsWith("JDY-")) return "Литий-полимерная (Li-Po), 5200 мА·ч (тип.), 35 Вт SuperCharge";
+        return null;
+    }
+
+    private synchronized void design(Context ctx) {
         if (designCache != null) return;
         double cap = 0; String src = null;
         try {
@@ -227,6 +251,7 @@ public class BatteryPage implements Page {
         // Проверка счётчика: у части прошивок (Honor X6c: ровно 3500000) он не меняется
         // вместе с уровнем — это заглушка, по ней нельзя оценивать ёмкость.
         boolean counterStatic = calib.getBoolean("cc_static", false);
+        boolean implausible = implausibleCounter(counter, lvl, designMah);
         if (!Double.isNaN(counter) && !Double.isNaN(lvl)) {
             float lastLvl = calib.getFloat("cc_last_level", -1f);
             float lastCc = calib.getFloat("cc_last_val", -1f);
@@ -239,6 +264,7 @@ public class BatteryPage implements Page {
                 if (counterStatic) calib.edit().putString("fcc", "[]").apply();
             }
         }
+        counterStatic = counterStatic || implausible;
         // FCC
         List<Double> fccs = new ArrayList<>();
         try {
@@ -270,6 +296,16 @@ public class BatteryPage implements Page {
         out.header("Состояние");
         if (!Double.isNaN(lvl)) out.bar("Уровень заряда", Util.f("%.0f %%", lvl), lvl,
                 lvl <= 15 ? Section.CRIT : (lvl <= 30 ? Section.WARN : Section.OK));
+        boolean haveDesign = designMah > 0 && !Double.isNaN(lvl);
+        if (counterStatic && haveDesign) {
+            out.row("Текущий заряд", Util.f("≈ %.0f мА·ч (уровень × паспортная ёмкость)", designMah * lvl / 100.0), Section.INFO);
+        } else if (!counterStatic && !Double.isNaN(counter)) {
+            out.row("Текущий заряд", Util.f("%.0f мА·ч (счётчик контроллера)", counter), Section.INFO);
+        } else if (haveDesign) {
+            out.row("Текущий заряд", Util.f("≈ %.0f мА·ч (уровень × паспортная ёмкость)", designMah * lvl / 100.0), Section.INFO);
+        }
+        if (counterStatic && !Double.isNaN(counter))
+            out.row("Счётчик контроллера", Util.f("%.0f мА·ч — заглушка прошивки (не меняется)", counter), Section.MUTED);
         Map<Integer, String> st = new LinkedHashMap<>();
         st.put(2, "Заряжается"); st.put(3, "Разряжается"); st.put(4, "Не заряжается"); st.put(5, "Полностью заряжена");
         out.row("Статус", ru(st, status, "Неизвестно"), chargingNow ? Section.OK : Section.NORMAL);
@@ -316,10 +352,6 @@ public class BatteryPage implements Page {
 
         // --- Ёмкость и износ ---
         out.header("Ёмкость и износ");
-        if (!Double.isNaN(counter)) out.row("Текущий заряд (счётчик)", Util.f("%.0f мА·ч", counter)
-                + (counterStatic ? " — не меняется, заглушка прошивки" : ""), counterStatic ? Section.MUTED : 0);
-        if (designMah > 0 && !Double.isNaN(lvl) && (counterStatic || Double.isNaN(counter)))
-            out.row("Остаток (по уровню)", Util.f("≈ %.0f мА·ч", designMah * lvl / 100.0));
         out.row("Паспортная ёмкость", designMah > 0 ? Util.f("%.0f мА·ч", designMah) : null);
         if (designSrc != null) out.row("  источник", designSrc, Section.MUTED);
         if (!Double.isNaN(fullMah)) {
@@ -328,22 +360,42 @@ public class BatteryPage implements Page {
         } else if (counterStatic) {
             out.row("Фактическая ёмкость", "Не определяется: счётчик контроллера не меняется", Section.MUTED);
         } else out.row("Фактическая ёмкость", "Нужен заряд ≥ 80 % (оценка по счётчику)", Section.MUTED);
-        double healthPct = Double.NaN, wear = Double.NaN;
+        List<BatteryMeter.Measurement> meas = BatteryMeter.load(ctx);
+        double measured = BatteryMeter.medianCapacity(meas);
+        if (!Double.isNaN(measured)) {
+            out.row("Измеренная ёмкость", Util.f("%.0f мА·ч (%d %s)", measured, meas.size(), meas.size() == 1 ? "замер" : "замеров"));
+        } else out.row("Измеренная ёмкость", "Пока нет замеров", Section.MUTED);
+        double[] pr = BatteryMeter.progress();
+        if (pr[0] > 0) out.row("Идёт замер", Util.f("накоплено %.1f мА·ч за %.0f %% (нужно %d %%)", pr[1], pr[2], BatteryMeter.NEED_LEVELS), Section.INFO);
+        else out.row("Идёт замер", "Ожидание смены уровня заряда…", Section.MUTED);
+        double healthPct = Double.NaN, wear = Double.NaN; String src = "";
         if (!Double.isNaN(fullMah) && designMah > 0) {
             wear = Math.max(0, 100 * (1 - fullMah / designMah));
             healthPct = Math.min(100, 100 * fullMah / designMah);
+            src = "счётчик";
         }
-        if (soh != null) healthPct = soh;
-        if (!Double.isNaN(healthPct)) out.bar("Здоровье батареи", Util.f("%.0f %%", healthPct), healthPct,
-                healthPct < 60 ? Section.CRIT : (healthPct < 80 ? Section.WARN : Section.OK));
-        if (!Double.isNaN(wear)) out.row("Износ", Util.f("%.1f %%", wear), Section.level(wear, 20, 40));
+        if (!Double.isNaN(measured) && designMah > 0) {
+            wear = Math.max(0, Math.min(100, 100 * (1 - measured / designMah)));
+            healthPct = Math.max(0, Math.min(100, 100 * measured / designMah));
+            src = "замер";
+        }
+        if (soh != null) { healthPct = soh; wear = 100 - soh; src = "SOH"; }
+        if (!Double.isNaN(healthPct)) {
+            out.bar("Здоровье батареи (" + src + ")", Util.f("%.0f %%", healthPct), healthPct,
+                    healthPct < 60 ? Section.CRIT : (healthPct < 80 ? Section.WARN : Section.OK));
+            out.bar("Износ (" + src + ")", Util.f("%.1f %%", wear), wear,
+                    wear >= 40 ? Section.CRIT : (wear >= 20 ? Section.WARN : Section.OK));
+        }
         out.row("Циклы зарядки", cyc > 0 ? "" + cyc : "Прошивка не сообщает", cyc > 0 ? 0 : Section.MUTED);
-        if (cyc > 0 && Double.isNaN(wear)) {
+        if (cyc > 0) {
             // Типичный Li-ion телефона: ~80 % ёмкости к 800 циклам (линейная оценка).
             double cycWear = Math.min(40, cyc / 800.0 * 20.0);
             out.row("Износ по циклам (ориентир)", Util.f("≈ %.0f %%", cycWear), Section.level(cycWear, 20, 40));
             out.note("Ориентир: обычно ~20 % износа к 800 полным циклам. Точное значение прошивка не отдаёт.");
         }
+        out.note("Для замера держите приложение открытым (экран включён), пока уровень заряда не изменится на 5 %. "
+                + "Чем больше замеров, тем точнее медиана. Замеры при зарядке менее точны: учитывается только ток "
+                + "батареи |I|, потери зарядного устройства не входят.");
         out.row("Единицы тока", currentUnit(curRaw));
         out.row("Единицы счётчика заряда", flag == 1 ? "мА·ч" : (flag == 0 ? "µA·ч" : "нет данных"));
         out.row("Платформа", magic ? "Honor MagicOS" : "Android");
@@ -352,6 +404,37 @@ public class BatteryPage implements Page {
         if (!Double.isNaN(fullMah) && designMah > 0)
             out.note("Фактическая ёмкость оценивается по счётчику заряда контроллера. "
                     + "На MediaTek он часто равен профилю батареи (константа), тогда износ не виден.");
+
+        // --- Батарея (модель) ---
+        out.header("Батарея (модель)");
+        String specTxt = spec(Build.MODEL);
+        boolean techKnown = tech != null && !tech.trim().isEmpty() && !tech.trim().equalsIgnoreCase("unknown");
+        if (techKnown) out.row("Технология", tech);
+        else if (specTxt != null) out.row("Технология", specTxt + " (по спецификации)");
+        else out.row("Технология", null);
+        if (techKnown && specTxt != null) out.row("Спецификация модели", specTxt + " (по спецификации)", Section.MUTED);
+        if (designMah > 0) {
+            out.row("Номинальное напряжение", "3.87 В (типовое)");
+            out.row("Энергия (паспорт)", Util.f("≈ %.1f Вт·ч", designMah * 3.87 / 1000.0));
+        }
+        String[][] sysf = {{"model_name", "Модель"}, {"manufacturer", "Производитель"}, {"serial_number", "Серийный номер"},
+                {"charge_full", "charge_full"}, {"charge_full_design", "charge_full_design"}, {"cycle_count", "cycle_count"}};
+        for (String[] f : sysf) {
+            String v = Util.read("/sys/class/power_supply/battery/" + f[0]);
+            if (v != null && !v.isEmpty()) out.row(f[1] + " (sysfs)", v);
+        }
+        List<String[]> pr2 = new ArrayList<>();
+        for (Map.Entry<String, String> e : new java.util.TreeMap<>(Util.allProps()).entrySet()) {
+            String k = e.getKey().toLowerCase();
+            if (k.contains("batt") || k.contains("fg_") || k.contains("gauge")) {
+                if (pr2.size() >= 30) break;
+                pr2.add(new String[]{e.getKey(), e.getValue()});
+            }
+        }
+        if (!pr2.isEmpty()) {
+            out.header("Свойства батареи (getprop)");
+            out.table(new String[]{"Свойство", "Значение"}, pr2, new float[]{0.6f, 0.4f});
+        }
 
         // --- Время работы ---
         out.header("Время работы");

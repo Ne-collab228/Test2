@@ -23,7 +23,7 @@ import java.util.TimeZone;
 public class SystemPage implements Page {
     @Override public String title() { return "Система"; }
 
-    @Override public boolean live() { return false; }
+    @Override public boolean live() { return true; }
 
     private static String yn(boolean b) { return b ? "Да" : "Нет"; }
 
@@ -32,7 +32,20 @@ public class SystemPage implements Page {
         return null;
     }
 
+    private static final java.util.Map<String, String> PKG_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
+    private static volatile Boolean rootCached;
+    private static volatile String rootFound = "";
+    private static volatile java.util.List<String[]> featureCache;
+
     private static String pkg(Context ctx, String name) {
+        String c = PKG_CACHE.get(name);
+        if (c != null) return c;
+        c = pkg0(ctx, name);
+        PKG_CACHE.put(name, c);
+        return c;
+    }
+
+    private static String pkg0(Context ctx, String name) {
         try {
             ctx.getPackageManager().getPackageInfo(name, 0);
             return "Да";
@@ -99,6 +112,17 @@ public class SystemPage implements Page {
         out.row("HMS Core / Honor ID", combine(pkg(ctx, "com.hihonor.id"), pkg(ctx, "com.huawei.hwid")));
 
         out.header("Безопасность и режим разработчика");
+        if (rootCached == null) computeRoot(ctx);
+        boolean root = rootCached;
+        String found = rootFound;
+        out.row("Root", root ? "Обнаружен: " + found : "Не обнаружен", root ? Section.CRIT : Section.OK);
+        buildSecurityRest(ctx, out);
+        buildUptime(out);
+        buildNetwork(ctx, out, pm);
+        buildFeatures(out, pm);
+    }
+
+    private static void computeRoot(Context ctx) {
         boolean root = false;
         String[] su = {"/system/bin/su", "/system/xbin/su", "/sbin/su", "/system/sbin/su", "/vendor/bin/su",
                 "/su/bin/su", "/data/local/bin/su", "/data/local/xbin/su", "/system/app/Superuser.apk"};
@@ -106,7 +130,11 @@ public class SystemPage implements Page {
         for (String p : su) if (Util.exists(p)) { root = true; found.append(p).append(' '); }
         String mg = pkg(ctx, "com.topjohnwu.magisk");
         if (mg.equals("Да")) { root = true; found.append("Magisk "); }
-        out.row("Root", root ? "Обнаружен: " + found.toString().trim() : "Не обнаружен", root ? Section.CRIT : Section.OK);
+        rootFound = found.toString().trim();
+        rootCached = root;
+    }
+
+    private static void buildSecurityRest(Context ctx, Section out) {
         try {
             out.row("Режим разработчика", yn(Settings.Global.getInt(ctx.getContentResolver(),
                     Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1));
@@ -116,6 +144,9 @@ public class SystemPage implements Page {
             out.row("Режим разработчика", null);
         }
 
+    }
+
+    private static void buildUptime(Section out) {
         out.header("Время работы");
         long up = SystemClock.elapsedRealtime(), awake = SystemClock.uptimeMillis();
         out.row("Аптайм", Util.duration(up / 1000.0));
@@ -125,9 +156,6 @@ public class SystemPage implements Page {
         TimeZone tz = TimeZone.getDefault();
         out.row("Часовой пояс", tz.getID() + " (" + tz.getDisplayName(false, TimeZone.SHORT) + ")");
         out.row("Текущее время", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(new Date()));
-
-        buildNetwork(ctx, out, pm);
-        buildFeatures(out, pm);
     }
 
     private static String combine(String a, String b) {
@@ -252,10 +280,19 @@ public class SystemPage implements Page {
                 {PackageManager.FEATURE_STRONGBOX_KEYSTORE, "StrongBox"},
                 {PackageManager.FEATURE_SECURE_LOCK_SCREEN, "Безопасный экран блокировки"},
         };
-        for (String[] e : f) {
-            boolean has;
-            try { has = pm.hasSystemFeature(e[0]); } catch (Throwable t) { continue; }
-            out.row(e[1], yn(has), has ? Section.OK : Section.MUTED);
+        java.util.List<String[]> cache = featureCache;
+        if (cache == null) {
+            cache = new java.util.ArrayList<>();
+            for (String[] e : f) {
+                boolean has;
+                try { has = pm.hasSystemFeature(e[0]); } catch (Throwable t) { continue; }
+                cache.add(new String[]{e[1], has ? "1" : "0"});
+            }
+            featureCache = cache;
+        }
+        for (String[] e : cache) {
+            boolean has = "1".equals(e[1]);
+            out.row(e[0], yn(has), has ? Section.OK : Section.MUTED);
         }
         out.note("Поддержка 5G этим способом не определяется.");
     }
