@@ -186,14 +186,22 @@ public class GpuPage implements Page {
     /** Справка по SoC: {gpu, макс. МГц, ядра, архитектура, примечание}. null если не определён. */
     public static String[] referenceSpec(String socModel, String buildModel, String hardware) {
         String s = ((socModel == null ? "" : socModel) + " " + (hardware == null ? "" : hardware)).toUpperCase();
-        boolean nic = buildModel != null && buildModel.toUpperCase().startsWith("NIC-");
-        if (nic || s.contains("MT6769V") || s.contains("MT6769") || s.contains("G81") || s.contains("MT6768")) {
-            return new String[]{"Mali-G52 MC2", "820", "2", "Bifrost", "Helio G81 / G81 Ultra (рабочая OPP ≈ 823 МГц)"};
-        }
-        if (s.contains("G80") || s.contains("MT6769T")) return new String[]{"Mali-G52 MC2", "950", "2", "Bifrost", "Helio G80"};
-        if (s.contains("G85") || s.contains("G88") || s.contains("G91") || s.contains("MT6769Z") || s.contains("MT6769H"))
+        String m = buildModel == null ? "" : buildModel.toUpperCase();
+        String[] g81 = {"Mali-G52 MC2", "820", "2", "Bifrost", "Helio G81 / G81 Ultra (рабочая OPP ≈ 823 МГц)"};
+        // Сначала модель устройства, затем точные номера, затем общие — порядок важен:
+        // "MT6769Z" содержит "MT6769", поэтому общие правила идут последними.
+        if (m.startsWith("NIC-")) return g81;
+        if (s.contains("G85") || s.contains("G88") || s.contains("G91") || s.contains("MT6769Z")
+                || s.contains("MT6769V/CZ") || s.contains("MT6769H") || s.contains("MT6769G") || s.contains("MT6769K"))
             return new String[]{"Mali-G52 MC2", "1000", "2", "Bifrost", "Helio G85 / G88 / G91"};
+        if (s.contains("G80") || s.contains("MT6769T") || s.contains("MT6769V/CT") || s.contains("MT6769V/CU"))
+            return new String[]{"Mali-G52 MC2", "950", "2", "Bifrost", "Helio G80"};
+        if (s.contains("G81") || s.contains("MT6769J") || s.contains("MT6769L") || s.contains("MT6769S")
+                || s.contains("MT6769V/CB")) return g81;
         if (s.contains("G99") || s.contains("MT6789")) return new String[]{"Mali-G57 MC2", "1100", "2", "Valhall", "Helio G99"};
+        if (s.contains("MT6769") || s.contains("MT6768"))
+            return new String[]{"Mali-G52 MC2", "820–1000", "2", "Bifrost",
+                    "семейство Helio P65/G70–G91, точная модель чипа не определена"};
         return null;
     }
 
