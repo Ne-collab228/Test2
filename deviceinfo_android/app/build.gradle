@@ -20,4 +20,9 @@ android {
     buildTypes { release { minifyEnabled false; signingConfig signingConfigs.release } }
     lint { checkReleaseBuilds false; abortOnError false }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    testOptions { unitTests { includeAndroidResources = true; all { maxHeapSize = "2g" } } }
+}
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
 }
