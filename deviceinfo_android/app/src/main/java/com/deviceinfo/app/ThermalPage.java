@@ -113,8 +113,35 @@ public class ThermalPage implements Page {
                 if (Float.isNaN(h)) out.row("До троттлинга", "нет данных (HAL не отдаёт запас)", Section.MUTED);
                 else {
                     double pct = h * 100.0;
-                    out.bar("Путь до троттлинга", Util.f("%.0f%%", pct), pct, Section.level(pct, 80, 100));
-                    out.note("100% — порог, с которого система начинает снижать частоты.");
+                    out.bar("Тепловой запас (headroom)", Util.f("%.2f  (%.0f%%)", h, pct), pct,
+                            Section.level(pct, 85, 100));
+                    // AOSP ThermalManagerService: headroom = (T − T_severe + 30) / 30,
+                    // где T — прогноз температуры датчика корпуса (SKIN) через 10 с,
+                    // T_severe — порог статуса «Сильный» из Thermal HAL. Значит, 1.0 — порог,
+                    // а каждые 0.1 — это 3 °C.
+                    double toLimit = (1.0 - h) * 30.0;
+                    out.row("До порога троттлинга", toLimit > 0
+                            ? Util.f("≈ %.0f °C (прогноз на 10 с)", toLimit)
+                            : Util.f("порог превышен на ≈ %.0f °C", -toLimit),
+                            toLimit > 3 ? Section.OK : Section.WARN);
+                    if (Build.VERSION.SDK_INT >= 35) {
+                        try {
+                            java.util.Map<Integer, Float> th = pm.getThermalHeadroomThresholds();
+                            if (th != null && !th.isEmpty()) {
+                                java.util.List<String[]> thRows = new java.util.ArrayList<>();
+                                for (java.util.Map.Entry<Integer, Float> e : new java.util.TreeMap<>(th).entrySet()) {
+                                    int k = e.getKey();
+                                    thRows.add(new String[]{k >= 0 && k < STATUS.length ? STATUS[k] : "" + k,
+                                            Util.f("%.2f", e.getValue())});
+                                }
+                                out.table(new String[]{"Статус", "Порог headroom"}, thRows, new float[]{0.6f, 0.4f});
+                            }
+                        } catch (Throwable ignored) { }
+                    }
+                    out.note("Запас считает сама система (Thermal HAL): у неё есть доступ ко всем датчикам, "
+                            + "в том числе к закрытым для приложений. Берётся датчик корпуса (SKIN), а не "
+                            + "процессора: 1.00 — порог, с которого Android начинает снижать частоты, "
+                            + "шаг 0.10 ≈ 3 °C. Саму температуру система приложениям не отдаёт.");
                 }
             }
         } catch (Throwable t) {
