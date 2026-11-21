@@ -44,6 +44,12 @@ public class MainActivity extends Activity {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     /** Фоновые замеры (tick) и предварительная подготовка остальных вкладок. */
     private final ExecutorService background = Executors.newSingleThreadExecutor();
+    /** Отчёт и загрузка в GitHub — отдельный поток, чтобы не стоять в очереди за замерами. */
+    private final ExecutorService reporter = Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.atomic.AtomicBoolean ticking = new java.util.concurrent.atomic.AtomicBoolean();
+    /** Сообщение в нижней строке, которое не затирается автообновлением до указанного времени. */
+    private String statusMsg;
+    private long statusUntil;
     private final List<Page> pages = Pages.create();
     private final List<Button> tabButtons = new ArrayList<>();
     /** Последний собранный результат каждой вкладки — показывается мгновенно при переключении. */
@@ -64,11 +70,16 @@ public class MainActivity extends Activity {
             if (!resumed) return;
             if (pages.get(current).live()) refresh();
             final Context app = getApplicationContext();
-            background.execute(() -> {
-                for (Page p : pages) {
-                    try { synchronized (p) { p.tick(app); } } catch (Throwable ignored) { }
-                }
-            });
+            // Не копим замеры: если прошлый ещё идёт, пропускаем этот.
+            if (ticking.compareAndSet(false, true)) {
+                background.execute(() -> {
+                    try {
+                        for (Page p : pages) {
+                            try { synchronized (p) { p.tick(app); } } catch (Throwable ignored) { }
+                        }
+                    } finally { ticking.set(false); }
+                });
+            }
             ui.postDelayed(this, PERIOD);
         }
     };
@@ -295,6 +306,7 @@ public class MainActivity extends Activity {
             rebuild(s);
             shownSignature = sig;
         }
+        if (statusMsg != null && System.currentTimeMillis() < statusUntil) { status.setText(statusMsg); return; }
         status.setText("Обновлено: " + new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
                 .format(new java.util.Date()) + (pages.get(current).live() ? "  •  авто 1.5 с" : ""));
     }
@@ -515,9 +527,9 @@ public class MainActivity extends Activity {
     }
 
     void shareReport() {
-        status.setText("Собираю отчёт…");
+        say("Собираю отчёт…", 60000);
         final Context app = getApplicationContext();
-        background.execute(() -> {
+        reporter.execute(() -> {
             String text = buildReport(app);
             ui.post(() -> {
                 Intent i = new Intent(Intent.ACTION_SEND);
@@ -525,9 +537,16 @@ public class MainActivity extends Activity {
                 i.putExtra(Intent.EXTRA_SUBJECT, "Device Info: " + Build.MODEL);
                 i.putExtra(Intent.EXTRA_TEXT, text);
                 startActivity(Intent.createChooser(i, "Отправить отчёт"));
-                status.setText("Отчёт готов");
+                say("Отчёт готов", 5000);
             });
         });
+    }
+
+    /** Сообщение в нижней строке, видимое не меньше ms миллисекунд. */
+    void say(String msg, long ms) {
+        statusMsg = msg;
+        statusUntil = System.currentTimeMillis() + ms;
+        status.setText(msg);
     }
 
     android.content.SharedPreferences gh() { return getSharedPreferences(GH, MODE_PRIVATE); }
@@ -561,25 +580,35 @@ public class MainActivity extends Activity {
         if (token.isEmpty()) { githubSettings(() -> uploadReport(auto)); return; }
         String repo = p.getString("repo", DEFAULT_REPO);
         String branch = p.getString("branch", DEFAULT_BRANCH);
-        status.setText("Загружаю отчёт в GitHub…");
+        say("Загрузка в GitHub: собираю отчёт…", 120000);
         final Context app = getApplicationContext();
         final long vc = versionCode();
         final String vn = versionName();
-        background.execute(() -> {
+        reporter.execute(() -> {
             String text = GitHubUploader.redact(buildReport(app));
             String ts = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US).format(new java.util.Date());
             String model = Build.MODEL.replaceAll("[^A-Za-z0-9._-]", "_");
+            ui.post(() -> say("Загрузка в GitHub: отправляю…", 120000));
             String path = "device-reports/" + model + "/" + ts + "_v" + vn + (auto ? "_auto" : "") + ".txt";
             GitHubUploader.Result r = GitHubUploader.upload(token, repo, branch, path, text,
                     "Отчёт Device Info " + vn + ": " + Build.MODEL + (auto ? " (авто после обновления)" : ""));
             ui.post(() -> {
                 if (r.ok) {
                     gh().edit().putLong("uploaded_version", vc).apply();
-                    status.setText("Отчёт загружен в GitHub: " + branch + "/" + path);
-                    android.widget.Toast.makeText(this, "Отчёт загружен в GitHub", android.widget.Toast.LENGTH_SHORT).show();
+                    say("Отчёт загружен в GitHub", 20000);
+                    if (!auto) new android.app.AlertDialog.Builder(this)
+                            .setTitle("Отчёт загружен")
+                            .setMessage("Файл: " + path + "\nВетка: " + branch + "\n\n" + r.message)
+                            .setPositiveButton("OK", null).show();
+                    else android.widget.Toast.makeText(this, "Отчёт загружен в GitHub", android.widget.Toast.LENGTH_SHORT).show();
                 } else {
-                    status.setText("GitHub: " + r.message);
-                    android.widget.Toast.makeText(this, "Не удалось загрузить: " + r.message, android.widget.Toast.LENGTH_LONG).show();
+                    say("GitHub: ошибка — " + r.message, 60000);
+                    new android.app.AlertDialog.Builder(this)
+                            .setTitle("Не удалось загрузить отчёт")
+                            .setMessage(r.message + "\n\nРепозиторий: " + repo + "\nВетка: " + branch
+                                    + "\n\nПроверьте токен: доступ к репозиторию Test2 и право Contents: Read and write.")
+                            .setPositiveButton("Настройки", (d, w) -> githubSettings(null))
+                            .setNegativeButton("Закрыть", null).show();
                 }
             });
         });
@@ -647,5 +676,6 @@ public class MainActivity extends Activity {
         super.onDestroy();
         worker.shutdownNow();
         background.shutdownNow();
+        reporter.shutdownNow();
     }
 }

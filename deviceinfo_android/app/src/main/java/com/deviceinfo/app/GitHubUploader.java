@@ -18,6 +18,9 @@ import java.nio.charset.StandardCharsets;
 public final class GitHubUploader {
     private GitHubUploader() {}
 
+    /** Адрес API (подменяется в тестах). */
+    static String apiBase = "https://api.github.com";
+
     public static final class Result {
         public final boolean ok;
         public final String message;
@@ -30,7 +33,7 @@ public final class GitHubUploader {
         HttpURLConnection c = null;
         try {
             String encPath = path.replace(" ", "%20");
-            URL url = new URL("https://api.github.com/repos/" + repo + "/contents/" + encPath);
+            URL url = new URL(apiBase + "/repos/" + repo + "/contents/" + encPath);
             c = (HttpURLConnection) url.openConnection();
             c.setRequestMethod("PUT");
             c.setConnectTimeout(15000);
