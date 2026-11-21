@@ -106,6 +106,68 @@ public final class BatteryMeter {
         return v.get(v.size() / 2);
     }
 
+    // ---------- Потребление: кольцевой буфер тока ----------
+    static final long BUCKET_MS = 10_000, RING_MS = 30 * 60_000L, WIN5_MS = 5 * 60_000L, WIN10_MS = 10 * 60_000L;
+    static final int MIN_POINTS = 6;
+
+    /** Буфер тока: усреднение по 10-секундным корзинам, хранится последние 30 мин (≤ 180 корзин). */
+    static final class CurrentRing {
+        final List<double[]> b = new ArrayList<>(); // {bucketStartMs, sum, n}
+
+        void add(long tMs, double ma) {
+            if (Double.isNaN(ma)) return;
+            long k = tMs / BUCKET_MS * BUCKET_MS;
+            double[] last = b.isEmpty() ? null : b.get(b.size() - 1);
+            if (last != null && last[0] == k) { last[1] += ma; last[2]++; }
+            else b.add(new double[]{k, ma, 1});
+            while (!b.isEmpty() && b.get(0)[0] < tMs - RING_MS) b.remove(0);
+        }
+
+        /** Средние по корзинам за последние windowMs. */
+        List<Double> points(long now, long windowMs) {
+            List<Double> r = new ArrayList<>();
+            for (double[] x : b) if (x[0] >= now - windowMs && x[0] <= now) r.add(x[1] / x[2]);
+            return r;
+        }
+
+        /** Среднее по всем отсчётам за windowMs или NaN. */
+        double avg(long now, long windowMs) {
+            double s = 0, n = 0;
+            for (double[] x : b) if (x[0] >= now - windowMs && x[0] <= now) { s += x[1]; n += x[2]; }
+            return n == 0 ? Double.NaN : s / n;
+        }
+    }
+
+    /** Коэффициент вариации (%) модулей значений; NaN при пустом списке или нулевом среднем. */
+    static double cvPercent(List<Double> pts) {
+        if (pts == null || pts.isEmpty()) return Double.NaN;
+        double m = 0;
+        for (double d : pts) m += Math.abs(d);
+        m /= pts.size();
+        if (m < 0.5) return Double.NaN;
+        double q = 0;
+        for (double d : pts) q += (Math.abs(d) - m) * (Math.abs(d) - m);
+        return 100 * Math.sqrt(q / pts.size()) / m;
+    }
+
+    /** Ровность: 0 сбор данных (< 6 точек), 1 ровное (CV < 25 %), 2 умеренные колебания (< 60 %), 3 сильные скачки. */
+    static int evennessGrade(List<Double> pts) {
+        if (pts == null || pts.size() < MIN_POINTS) return 0;
+        double cv = cvPercent(pts);
+        if (Double.isNaN(cv)) return 1;
+        return cv < 25 ? 1 : (cv < 60 ? 2 : 3);
+    }
+
+    private static final CurrentRing RING = new CurrentRing();
+    private static volatile int currentSign = 1;
+
+    /** Знак тока, определённый BatteryPage (−1 — прошивка инвертирует). */
+    static void setSign(int sign) { currentSign = sign < 0 ? -1 : 1; }
+
+    static synchronized void recordCurrent(long wallMs, double ma) { RING.add(wallMs, ma); }
+    static synchronized List<Double> currentPoints(long now, long windowMs) { return RING.points(now, windowMs); }
+    static synchronized double currentAvg(long now, long windowMs) { return RING.avg(now, windowMs); }
+
     // ---------- Android-часть ----------
     private static final MeterState STATE = new MeterState();
 
@@ -128,6 +190,7 @@ public final class BatteryMeter {
                     ma = BatteryPage.currentToMa(raw, -1, true);
                 }
             } catch (Throwable ignored) { }
+            if (!Double.isNaN(ma)) recordCurrent(System.currentTimeMillis(), ma * currentSign);
             Measurement m = step(STATE, SystemClock.elapsedRealtime(), pct, dir, plugged, ma, designMah);
             if (m != null) save(ctx, m);
         } catch (Throwable ignored) { }
@@ -170,5 +233,6 @@ public final class BatteryMeter {
     /** Сброс состояния (тесты). */
     static synchronized void reset() {
         STATE.lastLevel = -1; STATE.lastMs = -1; STATE.active = false; STATE.accMah = 0; STATE.startLevel = -1;
+        RING.b.clear(); currentSign = 1;
     }
 }

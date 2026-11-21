@@ -21,10 +21,13 @@ public final class BatteryHistory {
     /** Замер: время (мс), уровень %, состояние зарядки (заряжается/полный), температура °C, напряжение В. */
     public static final class Sample {
         public final long t; public final double level; public final boolean charging;
-        public final double temp, volt; public final int status;
-        public Sample(long t, double level, int status, boolean charging, double temp, double volt) {
+        public final double temp, volt, ma; public final int status;
+        public Sample(long t, double level, int status, boolean charging, double temp, double volt, double ma) {
             this.t = t; this.level = level; this.status = status; this.charging = charging;
-            this.temp = temp; this.volt = volt;
+            this.temp = temp; this.volt = volt; this.ma = ma;
+        }
+        public Sample(long t, double level, int status, boolean charging, double temp, double volt) {
+            this(t, level, status, charging, temp, volt, Double.NaN);
         }
     }
 
@@ -54,7 +57,7 @@ public final class BatteryHistory {
             if (a != null) for (int i = 0; i < a.length(); i++) {
                 JSONObject s = a.getJSONObject(i);
                 samples.add(new Sample(s.getLong("t"), s.getDouble("l"), s.optInt("st", 0), s.getBoolean("c"),
-                        s.optDouble("tc", Double.NaN), s.optDouble("v", Double.NaN)));
+                        s.optDouble("tc", Double.NaN), s.optDouble("v", Double.NaN), s.optDouble("i", Double.NaN)));
             }
             a = o.optJSONArray("sessions");
             if (a != null) for (int i = 0; i < a.length(); i++) {
@@ -78,6 +81,7 @@ public final class BatteryHistory {
                 j.put("t", s.t); j.put("l", s.level); j.put("st", s.status); j.put("c", s.charging);
                 if (!Double.isNaN(s.temp)) j.put("tc", s.temp);
                 if (!Double.isNaN(s.volt)) j.put("v", s.volt);
+                if (!Double.isNaN(s.ma)) j.put("i", s.ma);
                 a.put(j);
             }
             o.put("samples", a);
@@ -99,10 +103,15 @@ public final class BatteryHistory {
 
     /** Добавить замер (не чаще раза в 60 с, кроме смены состояния). true, если добавлен. */
     public boolean add(long now, double level, int status, boolean charging, double temp, double volt) {
+        return add(now, level, status, charging, temp, volt, Double.NaN);
+    }
+
+    /** То же с током (мА, знак: + в батарею), усреднённым за последнюю минуту (NaN — нет данных). */
+    public boolean add(long now, double level, int status, boolean charging, double temp, double volt, double ma) {
         Sample last = samples.isEmpty() ? null : samples.get(samples.size() - 1);
         boolean changed = last != null && last.status != status;
         if (!changed && last != null && now - last.t < MIN_INTERVAL_MS) return false;
-        samples.add(new Sample(now, Math.round(level * 10) / 10.0, status, charging, temp, volt));
+        samples.add(new Sample(now, Math.round(level * 10) / 10.0, status, charging, temp, volt, ma));
         while (samples.size() > MAX_SAMPLES) samples.remove(0);
         if (charging && open == null) {
             open = new Session(); open.start = now; open.from = level; open.open = true;
@@ -124,39 +133,53 @@ public final class BatteryHistory {
         return r;
     }
 
-    /** Скорости %/ч по соседним замерам одного состояния за последние hours часов. */
-    public static List<Double> segmentRates(List<Sample> all, long now, boolean charging, int hours) {
-        List<Double> rates = new ArrayList<>();
-        List<Sample> pts = new ArrayList<>();
-        for (Sample s : all) if (s.t >= now - hours * 3600_000L) pts.add(s);
-        for (int i = 1; i < pts.size(); i++) {
-            Sample a = pts.get(i - 1), b = pts.get(i);
-            double dt = (b.t - a.t) / 3600000.0;
-            if (dt <= 0 || dt > 2) continue;
-            if (a.charging == charging && b.charging == charging) {
-                double rate = (b.level - a.level) / dt;
-                if ((charging ? rate < -1 : rate > 1) || Math.abs(rate) > 100) continue;
-                rates.add(rate);
-            }
-        }
-        return rates;
-    }
+    static final long MAX_GAP_MS = 5 * 60_000L, MIN_SPAN_MS = 15 * 60_000L;
+    static final double MIN_DLEVEL = 2.0;
 
-    static double mean(List<Double> l) {
-        double s = 0; for (double d : l) s += d; return s / l.size();
+    /**
+     * Скорость по последнему непрерывному отрезку одного состояния (разрывы ≤ 5 мин, последний замер не старше 5 мин):
+     * линейная регрессия уровня по времени. Возвращает {наклон %/ч (со знаком), длительность мин, Δуровня %}
+     * или null, если отрезок короче 15 мин или уровень изменился менее чем на 2 %.
+     */
+    public static double[] regressionRate(List<Sample> all, long now, boolean charging) {
+        int end = all.size() - 1;
+        if (end < 1) return null;
+        Sample last = all.get(end);
+        if (last.charging != charging || now - last.t > MAX_GAP_MS) return null;
+        int start = end;
+        while (start > 0) {
+            Sample p = all.get(start - 1), c = all.get(start);
+            if (p.charging != charging || c.t - p.t > MAX_GAP_MS || c.t - p.t <= 0) break;
+            start--;
+        }
+        if (end - start < 1) return null;
+        long t0 = all.get(start).t;
+        long span = last.t - t0;
+        double dLevel = last.level - all.get(start).level;
+        if (span < MIN_SPAN_MS || Math.abs(dLevel) < MIN_DLEVEL) return null;
+        int n = end - start + 1;
+        double mx = 0, my = 0;
+        for (int i = start; i <= end; i++) { mx += (all.get(i).t - t0) / 3600000.0; my += all.get(i).level; }
+        mx /= n; my /= n;
+        double sxy = 0, sxx = 0;
+        for (int i = start; i <= end; i++) {
+            double x = (all.get(i).t - t0) / 3600000.0 - mx;
+            sxy += x * (all.get(i).level - my); sxx += x * x;
+        }
+        if (sxx <= 0) return null;
+        return new double[]{sxy / sxx, span / 60000.0, dLevel};
     }
 
     /** Средний расход %/ч (положительный) или NaN. */
     public static double dischargeRate(List<Sample> all, long now) {
-        List<Double> r = segmentRates(all, now, false, 12);
-        if (r.isEmpty()) return Double.NaN;
-        return -mean(r);
+        double[] r = regressionRate(all, now, false);
+        return r == null || r[0] >= 0 ? Double.NaN : -r[0];
     }
 
     /** Средняя скорость зарядки %/ч или NaN. */
     public static double chargeRate(List<Sample> all, long now) {
-        List<Double> r = segmentRates(all, now, true, 12);
-        return r.isEmpty() ? Double.NaN : mean(r);
+        double[] r = regressionRate(all, now, true);
+        return r == null || r[0] <= 0 ? Double.NaN : r[0];
     }
 
     /** Оставшиеся секунды: {kind (1 разряд, 2 зарядка, 0 нет), seconds}. */
@@ -169,28 +192,5 @@ public final class BatteryHistory {
             if (rate > 0.05) return new double[]{1, level / rate * 3600};
         }
         return new double[]{0, 0};
-    }
-
-    /** Стабильность разряда: {grade 0 сбор/1 стабильная/2 умеренная/3 нестабильная, cv%, mean, jumps, voltSdMv (NaN)}. */
-    public static double[] stability(List<Sample> all, long now) {
-        List<Double> rates = new ArrayList<>();
-        for (double r : segmentRates(all, now, false, 12)) rates.add(-r);
-        if (rates.size() < 3) return new double[]{0, Double.NaN, Double.NaN, 0, Double.NaN};
-        double m = mean(rates), sd = 0;
-        for (double r : rates) sd += (r - m) * (r - m);
-        sd = Math.sqrt(sd / rates.size());
-        double cv = Math.abs(m) > 0.01 ? 100 * sd / Math.abs(m) : 0;
-        int jumps = 0;
-        for (double r : rates) if (r > Math.max(3 * Math.abs(m), 15)) jumps++;
-        double grade = (cv < 40 && jumps == 0) ? 1 : (cv < 90 && jumps <= 1 ? 2 : 3);
-        List<Double> v = new ArrayList<>();
-        for (Sample s : all) if (s.t >= now - 6 * 3600_000L && !Double.isNaN(s.volt) && s.volt > 0) v.add(s.volt);
-        double vsd = Double.NaN;
-        if (v.size() > 2) {
-            double vm = mean(v), q = 0;
-            for (double x : v) q += (x - vm) * (x - vm);
-            vsd = Math.sqrt(q / v.size()) * 1000;
-        }
-        return new double[]{grade, cv, m, jumps, vsd};
     }
 }

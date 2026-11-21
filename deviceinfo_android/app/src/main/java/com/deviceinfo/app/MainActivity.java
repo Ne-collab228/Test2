@@ -112,7 +112,7 @@ public class MainActivity extends Activity {
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         Button report = makeButton("Отчёт");
-        report.setOnClickListener(v -> shareReport());
+        report.setOnClickListener(v -> reportMenu());
         head.addView(report, new LinearLayout.LayoutParams(-2, dp(38)));
         root.addView(head);
         View line = new View(this);
@@ -155,6 +155,7 @@ public class MainActivity extends Activity {
         setContentView(root);
         switchTab(0);
         prewarm();
+        ui.postDelayed(this::autoUploadIfUpdated, 6000);
     }
 
     /** Заранее собирает все вкладки в фоне, чтобы переключение было мгновенным. */
@@ -461,18 +462,63 @@ public class MainActivity extends Activity {
         return t;
     }
 
+    // ---------- отчёт ----------
+
+    static final String GH = "github";
+    static final String DEFAULT_REPO = "Ne-collab228/Test2";
+    static final String DEFAULT_BRANCH = "device-info-reports";
+
+    long versionCode() {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode;
+        } catch (Throwable e) { return 0; }
+    }
+
+    String versionName() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; }
+        catch (Throwable e) { return "?"; }
+    }
+
+    /** Полный текст отчёта по всем вкладкам. Выполнять в фоне. */
+    String buildReport(Context app) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Device Info ").append(versionName()).append(" — отчёт\n")
+                .append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
+                .append(" (").append(Build.DEVICE).append(")\n")
+                .append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", java.util.Locale.US)
+                        .format(new java.util.Date())).append('\n');
+        for (int i = 0; i < pages.size(); i++) {
+            Page p = pages.get(i);
+            Section s = buildSafe(p, app);
+            if (p instanceof SensorsPage) {
+                // датчики начинают присылать данные после регистрации — даём им 2 с
+                try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
+                s = buildSafe(p, app);
+                if (i != current) { try { synchronized (p) { p.onHide(app); } } catch (Throwable ignored) { } }
+            }
+            sb.append("\n===== ").append(p.title()).append(" =====\n").append(s.toText());
+        }
+        return sb.toString();
+    }
+
+    void reportMenu() {
+        String[] items = {"Поделиться текстом", "Загрузить в GitHub", "Настройки GitHub"};
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Отчёт")
+                .setItems(items, (d, w) -> {
+                    if (w == 0) shareReport();
+                    else if (w == 1) uploadReport(false);
+                    else githubSettings(null);
+                })
+                .show();
+    }
+
     void shareReport() {
         status.setText("Собираю отчёт…");
         final Context app = getApplicationContext();
-        worker.execute(() -> {
-            StringBuilder sb = new StringBuilder();
-            sb.append("Device Info — отчёт\n").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
-                    .append(" (").append(Build.DEVICE).append(")\n");
-            for (Page p : pages) {
-                sb.append("\n===== ").append(p.title()).append(" =====\n");
-                sb.append(buildSafe(p, app).toText());
-            }
-            String text = sb.toString();
+        background.execute(() -> {
+            String text = buildReport(app);
             ui.post(() -> {
                 Intent i = new Intent(Intent.ACTION_SEND);
                 i.setType("text/plain");
@@ -482,6 +528,103 @@ public class MainActivity extends Activity {
                 status.setText("Отчёт готов");
             });
         });
+    }
+
+    android.content.SharedPreferences gh() { return getSharedPreferences(GH, MODE_PRIVATE); }
+
+    /** После обновления приложения отчёт один раз загружается в GitHub автоматически. */
+    void autoUploadIfUpdated() {
+        if (isFinishing()) return;
+        long vc = versionCode();
+        android.content.SharedPreferences p = gh();
+        if (p.getLong("uploaded_version", -1) == vc) return;
+        if (p.getString("token", "").isEmpty()) {
+            if (p.getLong("prompted_version", -1) != vc) {
+                p.edit().putLong("prompted_version", vc).apply();
+                new android.app.AlertDialog.Builder(this)
+                        .setTitle("Автозагрузка отчёта")
+                        .setMessage("Приложение может само загружать отчёт файлом в GitHub после каждого "
+                                + "обновления. Для этого нужен токен доступа GitHub (вводится один раз, "
+                                + "хранится только на телефоне). Настроить сейчас?")
+                        .setPositiveButton("Настроить", (d, w) -> githubSettings(() -> uploadReport(true)))
+                        .setNegativeButton("Позже", null)
+                        .show();
+            }
+            return;
+        }
+        uploadReport(true);
+    }
+
+    void uploadReport(boolean auto) {
+        android.content.SharedPreferences p = gh();
+        String token = p.getString("token", "");
+        if (token.isEmpty()) { githubSettings(() -> uploadReport(auto)); return; }
+        String repo = p.getString("repo", DEFAULT_REPO);
+        String branch = p.getString("branch", DEFAULT_BRANCH);
+        status.setText("Загружаю отчёт в GitHub…");
+        final Context app = getApplicationContext();
+        final long vc = versionCode();
+        final String vn = versionName();
+        background.execute(() -> {
+            String text = GitHubUploader.redact(buildReport(app));
+            String ts = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.US).format(new java.util.Date());
+            String model = Build.MODEL.replaceAll("[^A-Za-z0-9._-]", "_");
+            String path = "device-reports/" + model + "/" + ts + "_v" + vn + (auto ? "_auto" : "") + ".txt";
+            GitHubUploader.Result r = GitHubUploader.upload(token, repo, branch, path, text,
+                    "Отчёт Device Info " + vn + ": " + Build.MODEL + (auto ? " (авто после обновления)" : ""));
+            ui.post(() -> {
+                if (r.ok) {
+                    gh().edit().putLong("uploaded_version", vc).apply();
+                    status.setText("Отчёт загружен в GitHub: " + branch + "/" + path);
+                    android.widget.Toast.makeText(this, "Отчёт загружен в GitHub", android.widget.Toast.LENGTH_SHORT).show();
+                } else {
+                    status.setText("GitHub: " + r.message);
+                    android.widget.Toast.makeText(this, "Не удалось загрузить: " + r.message, android.widget.Toast.LENGTH_LONG).show();
+                }
+            });
+        });
+    }
+
+    void githubSettings(Runnable after) {
+        android.content.SharedPreferences p = gh();
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        TextView hint = new TextView(this);
+        hint.setText("Токен: github.com → Settings → Developer settings → Personal access tokens → "
+                + "Fine-grained tokens → Generate. Repository access: только " + DEFAULT_REPO
+                + ", Permissions → Contents: Read and write. Токен хранится только на этом телефоне.");
+        hint.setTextSize(13);
+        box.addView(hint);
+        android.widget.EditText token = new android.widget.EditText(this);
+        token.setHint("github_pat_…");
+        token.setSingleLine(true);
+        token.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        token.setText(p.getString("token", ""));
+        box.addView(token);
+        android.widget.EditText repo = new android.widget.EditText(this);
+        repo.setHint("владелец/репозиторий");
+        repo.setSingleLine(true);
+        repo.setText(p.getString("repo", DEFAULT_REPO));
+        box.addView(repo);
+        android.widget.EditText branch = new android.widget.EditText(this);
+        branch.setHint("ветка");
+        branch.setSingleLine(true);
+        branch.setText(p.getString("branch", DEFAULT_BRANCH));
+        box.addView(branch);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Загрузка отчёта в GitHub")
+                .setView(box)
+                .setPositiveButton("Сохранить", (d, w) -> {
+                    p.edit().putString("token", token.getText().toString().trim())
+                            .putString("repo", repo.getText().toString().trim().isEmpty() ? DEFAULT_REPO : repo.getText().toString().trim())
+                            .putString("branch", branch.getText().toString().trim().isEmpty() ? DEFAULT_BRANCH : branch.getText().toString().trim())
+                            .apply();
+                    if (after != null && !token.getText().toString().trim().isEmpty()) after.run();
+                })
+                .setNeutralButton("Удалить токен", (d, w) -> p.edit().remove("token").apply())
+                .setNegativeButton("Отмена", null)
+                .show();
     }
 
     @Override protected void onResume() {

@@ -242,6 +242,7 @@ public class BatteryPage implements Page {
         // текущему замеру, чтобы с первого обновления знак не противоречил статусу.
         boolean inverted = votes <= -3 || (votes < 3 && vote < 0);
         int sign = inverted ? -1 : 1;
+        BatteryMeter.setSign(sign);
         if (!Double.isNaN(curMa)) curMa *= sign;
         if (!Double.isNaN(avgMa)) avgMa *= sign;
 
@@ -290,7 +291,8 @@ public class BatteryPage implements Page {
         long now = System.currentTimeMillis();
         if (history == null) history = new BatteryHistory(ctx);
         if (!Double.isNaN(lvl))
-            history.add(now, lvl, status, chargingNow, temp == null ? Double.NaN : temp, volt == null ? Double.NaN : volt);
+            history.add(now, lvl, status, chargingNow, temp == null ? Double.NaN : temp, volt == null ? Double.NaN : volt,
+                    BatteryMeter.currentAvg(now, 60_000));
 
         // --- Состояние ---
         out.header("Состояние");
@@ -439,25 +441,40 @@ public class BatteryPage implements Page {
         // --- Время работы ---
         out.header("Время работы");
         out.row("С момента включения", Util.duration(SystemClock.elapsedRealtime() / 1000.0));
+        String gather = "Сбор данных… (нужно ≥ 15 мин и ≥ 2 %)";
         if (est[0] == 1) out.row("Осталось работы (оценка)", Util.duration(est[1]), Section.OK);
         else if (est[0] == 2) out.row("До полной зарядки (оценка)", Util.duration(est[1]), Section.INFO);
-        else out.row("Оценка времени", "Сбор данных…", Section.MUTED);
+        else out.row(chargingNow ? "До полной зарядки (оценка)" : "Осталось работы (оценка)", gather, Section.MUTED);
+        double avg5 = BatteryMeter.currentAvg(now, BatteryMeter.WIN5_MS);
+        if (!chargingNow && haveDesign && !Double.isNaN(avg5) && avg5 < -1) {
+            double remH = designMah * lvl / 100.0 / Math.abs(avg5);
+            out.row("Осталось по текущему расходу", Util.duration(remH * 3600), Section.INFO);
+        }
         double dr = BatteryHistory.dischargeRate(history.samples, now);
-        out.row("Скорость разряда", Double.isNaN(dr) ? null : Util.f("%.1f %%/ч", dr));
+        out.row("Скорость разряда", Double.isNaN(dr) ? (chargingNow ? null : gather) : Util.f("%.1f %%/ч", dr),
+                Double.isNaN(dr) ? Section.MUTED : 0);
         if (!chargingNow)
             for (BatteryHistory.Session s : history.allSessions())
                 if (!s.open) { out.row("С последней зарядки", Util.duration((now - s.end) / 1000.0)); break; }
-        double[] sb = BatteryHistory.stability(history.samples, now);
-        if (sb[0] == 0) {
-            out.row("Стабильность разряда", "Сбор данных…", Section.MUTED);
-            out.note("Нужно не менее 4 замеров при разрядке (≈5 мин)");
+
+        // --- Потребление ---
+        out.header("Потребление");
+        List<Double> p5 = BatteryMeter.currentPoints(now, BatteryMeter.WIN5_MS);
+        if (p5.isEmpty() || Double.isNaN(avg5)) {
+            out.row("Средний ток (5 мин)", "Сбор данных…", Section.MUTED);
         } else {
-            out.row("Стабильность разряда", sb[0] == 1 ? "Стабильная" : (sb[0] == 2 ? "Умеренная" : "Нестабильная"),
-                    sb[0] == 1 ? Section.OK : (sb[0] == 2 ? Section.WARN : Section.CRIT));
-            out.row("Коэффициент вариации", Util.f("%.0f %%", sb[1]));
-            out.note(Util.f("Средний расход %.1f %%/ч, скачков: %d", sb[2], (int) sb[3])
-                    + (Double.isNaN(sb[4]) ? "" : Util.f(", разброс напряжения ±%.0f мВ", sb[4])));
+            out.row("Средний ток (5 мин)", Util.f("%.0f мА", Math.abs(avg5)));
+            if (volt != null) out.row("Средняя мощность (5 мин)", Util.f("%.2f Вт", volt * Math.abs(avg5) / 1000.0));
+            double mn = Double.MAX_VALUE, mx = -Double.MAX_VALUE;
+            for (double d : p5) { mn = Math.min(mn, Math.abs(d)); mx = Math.max(mx, Math.abs(d)); }
+            out.row("Мин / макс (5 мин)", Util.f("%.0f / %.0f мА", mn, mx));
         }
+        int grade = BatteryMeter.evennessGrade(BatteryMeter.currentPoints(now, BatteryMeter.WIN10_MS));
+        if (grade == 0) out.row("Ровность потребления", "Сбор данных…", Section.MUTED);
+        else out.row("Ровность потребления", grade == 1 ? "Ровное" : (grade == 2 ? "Умеренные колебания" : "Сильные скачки"),
+                grade == 1 ? Section.OK : (grade == 2 ? Section.WARN : Section.CRIT));
+        out.note("Показывает, насколько равномерно телефон тратит энергию. Скачки — это нормально при запуске приложений, "
+                + "играх, плохой связи; постоянно высокий ток в простое говорит о фоновой активности.");
 
         // --- История зарядок ---
         out.header("История зарядок");
