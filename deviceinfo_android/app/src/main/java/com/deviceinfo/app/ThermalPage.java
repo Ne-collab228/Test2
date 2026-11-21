@@ -148,7 +148,9 @@ public class ThermalPage implements Page {
         } else {
             long top = 0;
             for (long[] x : pol) top = Math.max(top, x[2]);
-            boolean any = false;
+            boolean any = false, closed = false;
+            long nowMs = SystemClock.elapsedRealtime();
+            sampleFreqs(pol, nowMs);
             for (long[] x : pol) {
                 String cores = x[0] == x[1] ? "Ядро " + x[0] : "Ядра " + x[0] + "–" + x[1];
                 cores += x[2] == top && pol.size() > 1 ? " (большие)" : (pol.size() > 1 ? " (малые)" : "");
@@ -159,11 +161,25 @@ public class ThermalPage implements Page {
                 } else if (x[3] > 0) {
                     out.row(cores, "без ограничений (до " + Util.khz(x[2]) + ")", Section.OK);
                 } else {
-                    out.row(cores, "лимит закрыт прошивкой (макс. " + Util.khz(x[2]) + ")", Section.MUTED);
+                    closed = true;
+                    long cur = curFreq(x[0], x[1]);
+                    long peak = peakFreq(x[0], nowMs);
+                    if (peak <= 0) {
+                        out.row(cores, "лимит закрыт прошивкой (макс. " + Util.khz(x[2]) + ")", Section.MUTED);
+                    } else {
+                        boolean full = peak >= x[2] * 0.97;
+                        out.row(cores, (cur > 0 ? "сейчас " + Util.khz(cur) + " · " : "") + "пик за 2 мин "
+                                + Util.khz(peak) + " из " + Util.khz(x[2]) + (full ? " — не ограничено" : ""),
+                                full ? Section.OK : Section.MUTED);
+                    }
                 }
             }
-            out.note(any ? "Прошивка сейчас снижает максимальную частоту: из-за нагрева или режима энергосбережения."
-                    : "Это и есть настоящий троттлинг: когда телефон перегреется, здесь появится «ограничено до …».");
+            if (any) out.note("Прошивка сейчас снижает максимальную частоту: из-за нагрева или режима энергосбережения.");
+            else if (closed) out.note("Прошивка Honor закрывает сам лимит частоты, поэтому показан пик частоты за последние "
+                    + "2 минуты. Если ядра доходят до максимума — ограничения нет. Без нагрузки они и так работают "
+                    + "на низкой частоте, это нормально. Проверка: запустите игру или тест, вернитесь сюда — если под "
+                    + "нагрузкой пик заметно ниже максимума, прошивка снижает частоту (это и есть троттлинг).");
+            else out.note("Это и есть настоящий троттлинг: когда телефон перегреется, здесь появится «ограничено до …».");
         }
 
         // --- таблица зон ---
@@ -215,6 +231,49 @@ public class ThermalPage implements Page {
             res.add(new long[]{first, last, max, lim == null ? 0 : lim});
         }
         return res;
+    }
+
+    static final long PEAK_WINDOW_MS = 120_000;
+    /** Отсчёты частоты по кластерам: первое ядро -> [{время, кГц}]. */
+    private static final java.util.Map<Long, java.util.ArrayDeque<long[]>> FREQ = new java.util.HashMap<>();
+
+    /** Наибольшая текущая частота среди ядер first..last (кГц) или 0. */
+    static long curFreq(long first, long last) {
+        long best = 0;
+        for (long c = first; c <= last; c++) {
+            Long f = Util.readLong("/sys/devices/system/cpu/cpu" + c + "/cpufreq/scaling_cur_freq");
+            if (f != null && f > best) best = f;
+        }
+        return best;
+    }
+
+    static synchronized void sampleFreqs(List<long[]> pol, long nowMs) {
+        for (long[] x : pol) {
+            long f = curFreq(x[0], x[1]);
+            if (f > 0) addFreq(x[0], nowMs, f);
+        }
+    }
+
+    static synchronized void addFreq(long cluster, long nowMs, long khz) {
+        java.util.ArrayDeque<long[]> q = FREQ.get(cluster);
+        if (q == null) { q = new java.util.ArrayDeque<>(); FREQ.put(cluster, q); }
+        q.addLast(new long[]{nowMs, khz});
+        while (!q.isEmpty() && (q.peekFirst()[0] < nowMs - PEAK_WINDOW_MS || q.peekFirst()[0] > nowMs)) q.pollFirst();
+    }
+
+    /** Пик частоты кластера за последние 2 минуты (кГц) или 0. */
+    static synchronized long peakFreq(long cluster, long nowMs) {
+        java.util.ArrayDeque<long[]> q = FREQ.get(cluster);
+        long best = 0;
+        if (q != null) for (long[] v : q) if (v[0] >= nowMs - PEAK_WINDOW_MS && v[0] <= nowMs) best = Math.max(best, v[1]);
+        return best;
+    }
+
+    static synchronized void resetFreqs() { FREQ.clear(); }
+
+    /** Фоновый отсчёт раз в 1.5 с, чтобы пик частоты копился и когда вкладка не открыта. */
+    @Override public void tick(Context ctx) {
+        try { sampleFreqs(cpuLimits(), SystemClock.elapsedRealtime()); } catch (Throwable ignored) { }
     }
 
     /** Порог статуса «Лёгкий» из getThermalHeadroomThresholds; если его нет — 1.0 (порог «Сильный»). */

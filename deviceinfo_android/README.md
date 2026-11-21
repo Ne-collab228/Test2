@@ -4,7 +4,7 @@
 (NIC-LX1/2/3, MediaTek Helio G81 Ultra, Mali-G52 MC2, Android 15 / MagicOS 9),
 но работает на любом Android 8+.
 
-**Готовый APK:** [`releases/device-info-1.0.9.apk`](releases/device-info-1.0.9.apk)
+**Готовый APK:** [`releases/device-info-1.0.10.apk`](releases/device-info-1.0.10.apk)
 (скачать → открыть на телефоне → разрешить установку из этого источника).
 
 ## Вкладки

@@ -130,4 +130,33 @@ public class PreciseMeterTest {
             assertArrayEquals(new long[]{6, 7, 2000000, 1500000}, l.get(1));
         } finally { Util.root = old; }
     }
+
+    @Test public void peakFreqWindow() {
+        ThermalPage.resetFreqs();
+        ThermalPage.addFreq(6, 0, 2000000);
+        ThermalPage.addFreq(6, 60_000, 1100000);
+        assertEquals(2000000, ThermalPage.peakFreq(6, 100_000));
+        ThermalPage.addFreq(6, 130_000, 900000);
+        assertEquals(1100000, ThermalPage.peakFreq(6, 130_000));   // отсчёт 0 мс вышел из окна 2 мин
+        assertEquals(0, ThermalPage.peakFreq(0, 130_000));
+    }
+
+    @Test public void closedLimitShowsPeak() throws Exception {
+        File root = tmp.getRoot();
+        String b = "sys/devices/system/cpu/";
+        write(root, b + "cpufreq/policy6/related_cpus", "6 7\n");
+        write(root, b + "cpufreq/policy6/cpuinfo_max_freq", "2000000\n");
+        write(root, b + "cpu6/cpufreq/scaling_cur_freq", "2000000\n");
+        write(root, b + "cpu7/cpufreq/scaling_cur_freq", "1500000\n");
+        String old = Util.root;
+        try {
+            Util.root = root.getAbsolutePath();
+            ThermalPage.resetFreqs();
+            List<long[]> l = ThermalPage.cpuLimits();
+            assertEquals(0, l.get(0)[3]);
+            assertEquals(2000000, ThermalPage.curFreq(6, 7));
+            ThermalPage.sampleFreqs(l, 1000);
+            assertEquals(2000000, ThermalPage.peakFreq(6, 1000));
+        } finally { Util.root = old; ThermalPage.resetFreqs(); }
+    }
 }
