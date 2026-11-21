@@ -195,6 +195,49 @@ public class HonorX6cSimulationTest {
         assertTrue("MagicOS units mA\n" + t, t.contains("мА") && (t.contains("MagicOS") || t.contains("мА·ч")));
     }
 
+    private void realBattery(int level, int counter) {
+        Intent b = new Intent(Intent.ACTION_BATTERY_CHANGED);
+        b.putExtra(BatteryManager.EXTRA_LEVEL, level);
+        b.putExtra(BatteryManager.EXTRA_SCALE, 100);
+        b.putExtra(BatteryManager.EXTRA_STATUS, 3);
+        b.putExtra(BatteryManager.EXTRA_PLUGGED, 0);
+        b.putExtra(BatteryManager.EXTRA_HEALTH, 2);
+        b.putExtra(BatteryManager.EXTRA_TEMPERATURE, 369);
+        b.putExtra(BatteryManager.EXTRA_VOLTAGE, 3813);
+        b.putExtra(BatteryManager.EXTRA_TECHNOLOGY, "Unknown");
+        b.putExtra("android.os.extra.CYCLE_COUNT", 262);
+        ctx.sendStickyBroadcast(b);
+        ShadowBatteryManager bm = shadowOf((BatteryManager) ctx.getSystemService(Context.BATTERY_SERVICE));
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER, counter);
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW, -675);
+        bm.setIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_AVERAGE, -591);
+    }
+
+    /** Реальные значения из отчёта с Honor X6c (NIC-LX1): счётчик в µA·ч (3500000), ток в мА (−675). */
+    @Test public void battery_realX6cReport() throws Exception {
+        setup("sysroot");
+        realBattery(54, 3500000);
+        Page bp = new BatteryPage();
+        Section s = null;
+        for (int i = 0; i < 3; i++) { s = build(bp, ctx); Thread.sleep(100); }
+        String t = s.toText();
+        System.out.println("BATTERY REAL:\n" + t);
+        assertTrue("current -675 mA\n" + t, t.contains("-675 мА"));
+        assertTrue("power 2.57 W\n" + t, t.contains("2.57 Вт"));
+        assertTrue("current unit mA\n" + t, t.contains("Единицы тока: мА"));
+        assertTrue("counter unit uAh\n" + t, t.contains("µA·ч"));
+        assertTrue("cycles\n" + t, t.contains("262"));
+        assertTrue("cycle wear\n" + t, t.contains("Износ по циклам"));
+        assertFalse("not -1 mA\n" + t, t.contains("Ток: -1 мА"));
+        // уровень упал на 4 %, а счётчик тот же -> заглушка
+        realBattery(50, 3500000);
+        s = build(bp, ctx);
+        t = s.toText();
+        System.out.println("BATTERY REAL (static counter):\n" + t);
+        assertTrue("static counter detected\n" + t, t.contains("заглушка"));
+        assertTrue("remaining by level\n" + t, t.contains("Остаток (по уровню)"));
+    }
+
     /** С первого обновления статус «разряжается» + положительный ток не должен показываться как «+ в батарею / зарядка». */
     @Test public void battery_firstRefreshSignConsistentWithStatus() throws Exception {
         setup("sysroot");

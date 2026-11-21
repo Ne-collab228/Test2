@@ -50,6 +50,15 @@ public class HelpersTest {
         assertEquals(0, r[2], 0);
     }
 
+    @Test public void battery_normalize_x6cMixedUnits() {
+        // Honor X6c: счётчик в µA·ч, ток в мА
+        double[] r = BatteryPage.normalize(3500000, -675, 54, true);
+        assertEquals(3500, r[0], 0.01);
+        assertEquals(-675, r[1], 0.01);
+        assertEquals(-675, BatteryPage.currentToMa(-675, 0, false), 0.01);
+        assertEquals(-675, BatteryPage.currentToMa(-675000, 1, true), 0.01);
+    }
+
     @Test public void battery_normalize_noData() {
         double[] r = BatteryPage.normalize(Integer.MIN_VALUE, Integer.MIN_VALUE, 76, true);
         assertTrue(Double.isNaN(r[0]));

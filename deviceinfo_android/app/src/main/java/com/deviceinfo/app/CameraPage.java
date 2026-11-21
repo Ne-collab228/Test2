@@ -62,6 +62,17 @@ public class CameraPage implements Page {
         }
     }
 
+    /** Паспортные мегапиксели основной (задней) и фронтальной камеры известных моделей; 0 — нет данных. */
+    static int specMegapixels(Integer facing) {
+        String m = (android.os.Build.MODEL == null ? "" : android.os.Build.MODEL).toUpperCase();
+        if (facing == null) return 0;
+        if (m.startsWith("NIC-")) // Honor X6c
+            return facing == CameraCharacteristics.LENS_FACING_BACK ? 50 : 5;
+        if (m.startsWith("JDY-")) // Honor X6b
+            return facing == CameraCharacteristics.LENS_FACING_BACK ? 50 : 5;
+        return 0;
+    }
+
     private void describe(CameraManager cm, String id, String title, Section out, boolean phys) {
         out.header(title);
         CameraCharacteristics c;
@@ -111,6 +122,14 @@ public class CameraPage implements Page {
         if (bestMax != null) out.row("Макс. разрешение (full-res режим)", bestMax.getWidth() + "×" + bestMax.getHeight() + " (" + Util.f("%.1f МП", mpMax) + ")");
         double top = Math.max(Math.max(mpPix, mpAct), Math.max(mpOut, mpMax));
         out.row("Матрица (макс.)", top > 0 ? Util.f("%.1f МП", top) : null, Section.INFO);
+        // Сенсоры Quad-Bayer (50 МП) в Camera2 часто видны только в режиме объединения 4-в-1
+        // (12.5 МП), без карты полного разрешения. Для известных моделей показываем паспорт.
+        int specMp = specMegapixels(facing);
+        if (specMp > 0 && top > 0 && specMp > top * 2.5) {
+            out.row("Матрица (по спецификации)", specMp + " МП", Section.OK);
+            out.note(Util.f("Сенсор %d МП с объединением пикселей 4-в-1: системный интерфейс камеры отдаёт %.1f МП, "
+                    + "полное разрешение доступно в режиме «%d МП» приложения «Камера».", specMp, top, specMp));
+        }
         if (mpPix > 0 && mpOut > 0 && mpPix > mpOut * 1.5 && mpMax == 0)
             out.note("Пиксельный массив больше максимального выходного размера: сенсор, вероятно, работает с биннингом. "
                     + "Режим " + Math.round(mpPix) + " МП доступен в приложении камеры.");

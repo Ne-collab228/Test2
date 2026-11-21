@@ -56,12 +56,21 @@ public class BatteryPage implements Page {
         return new double[]{counter, currentToMa(currentRaw, flag, magicOs), flag};
     }
 
-    /** Ток в мА по флагу единиц (см. normalize). NaN если нет данных. */
+    /**
+     * Ток в мА. Единица тока определяется НЕЗАВИСИМО от счётчика заряда: на Honor X6c
+     * CHARGE_COUNTER приходит в µA·ч (3500000), а CURRENT_NOW — в мА (−675). Телефон с
+     * работающим приложением (экран включён) потребляет десятки–тысячи мА, поэтому
+     * |x| < 10000 — это мА, а |x| ≥ 10000 — µA. flag/magicOs оставлены для совместимости.
+     */
     static double currentToMa(int x, int flag, boolean magicOs) {
         if (!valid(x) || x == 0) return Double.NaN;
-        if (flag == 1 || (flag == -1 && magicOs)) return Math.abs(x) > 20000 ? x / 1000.0 : x;
-        if (flag == 0) return x / 1000.0;
-        return Math.abs(x) > 20000 ? x / 1000.0 : x;
+        return Math.abs(x) >= 10000 ? x / 1000.0 : x;
+    }
+
+    /** Единица, в которой прошивка отдаёт ток (для подписи). */
+    static String currentUnit(int x) {
+        if (!valid(x) || x == 0) return "нет данных";
+        return Math.abs(x) >= 10000 ? "µA" : "мА";
     }
 
     /** Голос за знак: +1 совпал со статусом, -1 нет, 0 нет вывода. status: BatteryManager.BATTERY_STATUS_*. */
@@ -215,13 +224,28 @@ public class BatteryPage implements Page {
         design(ctx);
         double designMah = designCache[0];
 
+        // Проверка счётчика: у части прошивок (Honor X6c: ровно 3500000) он не меняется
+        // вместе с уровнем — это заглушка, по ней нельзя оценивать ёмкость.
+        boolean counterStatic = calib.getBoolean("cc_static", false);
+        if (!Double.isNaN(counter) && !Double.isNaN(lvl)) {
+            float lastLvl = calib.getFloat("cc_last_level", -1f);
+            float lastCc = calib.getFloat("cc_last_val", -1f);
+            if (lastLvl < 0) {
+                calib.edit().putFloat("cc_last_level", (float) lvl).putFloat("cc_last_val", (float) counter).apply();
+            } else if (Math.abs(lvl - lastLvl) >= 2) {
+                counterStatic = Math.abs(counter - lastCc) < 1;
+                calib.edit().putFloat("cc_last_level", (float) lvl).putFloat("cc_last_val", (float) counter)
+                        .putBoolean("cc_static", counterStatic).apply();
+                if (counterStatic) calib.edit().putString("fcc", "[]").apply();
+            }
+        }
         // FCC
         List<Double> fccs = new ArrayList<>();
         try {
             JSONArray a = new JSONArray(calib.getString("fcc", "[]"));
             for (int i = 0; i < a.length(); i++) fccs.add(a.getDouble(i));
         } catch (Throwable ignored) { }
-        if (!Double.isNaN(counter) && !Double.isNaN(lvl) && lvl >= 80) {
+        if (!counterStatic && !Double.isNaN(counter) && !Double.isNaN(lvl) && lvl >= 80) {
             double fcc = counter * 100.0 / lvl;
             if (designMah <= 0 || (fcc > 0.4 * designMah && fcc < 1.25 * designMah)) {
                 if (fccs.isEmpty() || Math.abs(fccs.get(fccs.size() - 1) - fcc) >= 1) {
@@ -233,7 +257,7 @@ public class BatteryPage implements Page {
                 }
             }
         }
-        double fullMah = fccs.isEmpty() ? Double.NaN : median(fccs);
+        double fullMah = fccs.isEmpty() || counterStatic ? Double.NaN : median(fccs);
 
         // История
         boolean chargingNow = status == 2 || status == 5;
@@ -292,13 +316,18 @@ public class BatteryPage implements Page {
 
         // --- Ёмкость и износ ---
         out.header("Ёмкость и износ");
-        if (!Double.isNaN(counter)) out.row("Текущий заряд", Util.f("%.0f мА·ч", counter));
+        if (!Double.isNaN(counter)) out.row("Текущий заряд (счётчик)", Util.f("%.0f мА·ч", counter)
+                + (counterStatic ? " — не меняется, заглушка прошивки" : ""), counterStatic ? Section.MUTED : 0);
+        if (designMah > 0 && !Double.isNaN(lvl) && (counterStatic || Double.isNaN(counter)))
+            out.row("Остаток (по уровню)", Util.f("≈ %.0f мА·ч", designMah * lvl / 100.0));
         out.row("Паспортная ёмкость", designMah > 0 ? Util.f("%.0f мА·ч", designMah) : null);
         if (designSrc != null) out.row("  источник", designSrc, Section.MUTED);
         if (!Double.isNaN(fullMah)) {
             out.row("Фактическая ёмкость", Util.f("%.0f мА·ч", fullMah));
             out.row("  источник", "Оценка: счётчик заряда / уровень (" + fccs.size() + " замер.)", Section.MUTED);
-        } else out.row("Фактическая ёмкость", "Нужен заряд ≥ 80 %", Section.MUTED);
+        } else if (counterStatic) {
+            out.row("Фактическая ёмкость", "Не определяется: счётчик контроллера не меняется", Section.MUTED);
+        } else out.row("Фактическая ёмкость", "Нужен заряд ≥ 80 % (оценка по счётчику)", Section.MUTED);
         double healthPct = Double.NaN, wear = Double.NaN;
         if (!Double.isNaN(fullMah) && designMah > 0) {
             wear = Math.max(0, 100 * (1 - fullMah / designMah));
@@ -309,8 +338,14 @@ public class BatteryPage implements Page {
                 healthPct < 60 ? Section.CRIT : (healthPct < 80 ? Section.WARN : Section.OK));
         if (!Double.isNaN(wear)) out.row("Износ", Util.f("%.1f %%", wear), Section.level(wear, 20, 40));
         out.row("Циклы зарядки", cyc > 0 ? "" + cyc : "Прошивка не сообщает", cyc > 0 ? 0 : Section.MUTED);
-        String unitTxt = flag == 1 ? "мА / мА·ч" : (flag == 0 ? "µA / µA·ч" : (magic ? "мА (MagicOS)" : "авто"));
-        out.row("Единицы тока/заряда", unitTxt);
+        if (cyc > 0 && Double.isNaN(wear)) {
+            // Типичный Li-ion телефона: ~80 % ёмкости к 800 циклам (линейная оценка).
+            double cycWear = Math.min(40, cyc / 800.0 * 20.0);
+            out.row("Износ по циклам (ориентир)", Util.f("≈ %.0f %%", cycWear), Section.level(cycWear, 20, 40));
+            out.note("Ориентир: обычно ~20 % износа к 800 полным циклам. Точное значение прошивка не отдаёт.");
+        }
+        out.row("Единицы тока", currentUnit(curRaw));
+        out.row("Единицы счётчика заряда", flag == 1 ? "мА·ч" : (flag == 0 ? "µA·ч" : "нет данных"));
         out.row("Платформа", magic ? "Honor MagicOS" : "Android");
         out.row("Знак тока", inverted ? "Инвертирован прошивкой (исправлено)" : "Стандартный (+ в батарею / − из батареи)",
                 inverted ? Section.WARN : Section.MUTED);

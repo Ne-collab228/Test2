@@ -160,8 +160,19 @@ public class SystemPage implements Page {
         try {
             WifiManager wm = (WifiManager) ctx.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             out.row("Wi-Fi включён", yn(wm.isWifiEnabled()));
-            WifiInfo wi = wm.getConnectionInfo();
-            if (wi != null && wi.getNetworkId() != -1) {
+            WifiInfo wi = null;
+            // Android 12+: getConnectionInfo() без геолокации отдаёт пустышку (networkId = -1);
+            // данные о связи (скорость, частота, RSSI) берём из NetworkCapabilities.
+            if (Build.VERSION.SDK_INT >= 31) {
+                try {
+                    ConnectivityManager cm2 = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+                    Network an = cm2.getActiveNetwork();
+                    NetworkCapabilities anc = an == null ? null : cm2.getNetworkCapabilities(an);
+                    if (anc != null && anc.getTransportInfo() instanceof WifiInfo) wi = (WifiInfo) anc.getTransportInfo();
+                } catch (Throwable ignored) { }
+            }
+            if (wi == null) wi = wm.getConnectionInfo();
+            if (wi != null && (wi.getNetworkId() != -1 || wi.getLinkSpeed() > 0)) {
                 String ssid = wi.getSSID();
                 if (ssid == null || ssid.contains("unknown ssid")) ssid = "скрыт (нужно разрешение на геолокацию)";
                 out.row("SSID", ssid);
@@ -176,13 +187,19 @@ public class SystemPage implements Page {
         }
         try {
             StringBuilder sb = new StringBuilder();
-            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if (!ni.isUp() || ni.isLoopback()) continue;
-                for (InetAddress a : Collections.list(ni.getInetAddresses())) {
-                    String h = a.getHostAddress();
+            ConnectivityManager cm3 = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            Network an = cm3.getActiveNetwork();
+            android.net.LinkProperties lp = an == null ? null : cm3.getLinkProperties(an);
+            if (lp != null) {
+                for (android.net.LinkAddress la : lp.getLinkAddresses()) {
+                    String h = la.getAddress().getHostAddress();
                     int z = h.indexOf('%');
                     if (z > 0) h = h.substring(0, z);
-                    sb.append(ni.getName()).append(": ").append(h).append('\n');
+                    sb.append(lp.getInterfaceName()).append(": ").append(h).append('\n');
+                }
+                if (!lp.getDnsServers().isEmpty()) {
+                    sb.append("DNS:");
+                    for (InetAddress d : lp.getDnsServers()) sb.append(' ').append(d.getHostAddress());
                 }
             }
             out.row("IP-адреса", sb.toString().trim());
