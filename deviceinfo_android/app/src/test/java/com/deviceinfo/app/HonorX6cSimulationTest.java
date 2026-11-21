@@ -34,8 +34,15 @@ import java.util.Map;
 
 /** Симуляция Honor X6c (NIC-LX2, Helio G81 Ultra, MagicOS 9) на JVM через Robolectric. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = 35)
+@Config(sdk = 35, qualifiers = "w360dp-h802dp-xhdpi", shadows = HonorX6cSimulationTest.ShadowPowerProfile.class)
 public class HonorX6cSimulationTest {
+    /** Паспортная ёмкость Honor X6c (power_profile.xml: battery.capacity = 5300). */
+    @org.robolectric.annotation.Implements(className = "com.android.internal.os.PowerProfile", isInAndroidSdk = false)
+    public static class ShadowPowerProfile {
+        @org.robolectric.annotation.Implementation protected void __constructor__(Context c) { }
+        @org.robolectric.annotation.Implementation protected double getBatteryCapacity() { return 5300.0; }
+    }
+
     private Context ctx;
     private static final Map<String, String> reports = new LinkedHashMap<>();
 
@@ -186,8 +193,15 @@ public class HonorX6cSimulationTest {
         String t = textOf(DisplayPage.class);
         System.out.println("DISPLAY:\n" + t);
         assertTrue(t, t.contains("720 × 1604") || t.contains("720×1604"));
-        assertTrue(t, t.contains("20:9"));
+        assertTrue(t, t.matches("(?s).*20(\\.\\d)?:9.*"));
         assertFalse("wrong diagonal from xdpi\n" + t, t.contains("5.5″") || t.contains("5.50″"));
+    }
+
+    /** Строгая проверка: маркетинговое соотношение 20:9 (а не 20.1:9). */
+    @Test public void display_aspectStrict20to9() throws Exception {
+        setup("sysroot");
+        String t = textOf(DisplayPage.class);
+        assertTrue(t, t.contains("20:9"));
     }
 
     @Test public void memory() throws Exception {
