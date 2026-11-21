@@ -499,19 +499,163 @@ PLUGGED_API = {0: None, 1: "Сеть (AC)", 2: "USB", 4: "Беспроводна
 HEALTH_SYSFS = {"good": "Хорошее", "overheat": "Перегрев", "dead": "Износ (неисправна)",
                 "over voltage": "Перенапряжение", "cold": "Переохлаждение",
                 "unspecified failure": "Сбой", "unknown": "Неизвестно"}
+CHARGING_STATUS_API = {1: "Обычная", 2: "Остановлена: холодно", 3: "Остановлена: перегрев",
+                       4: "Щадящий режим (Long Life)", 5: "Адаптивная (умная) зарядка"}
+
+INT_MIN, INT_MAX = -2147483648, 2147483647
+LONG_MIN = -9223372036854775808
+
+# Паспортная ёмкость известных моделей — последний запасной вариант, если
+# PowerProfile ничего не вернул. Ключ — подстрока модели/маркетингового имени.
+KNOWN_BATTERY_MAH = {"x6c": 5300, "jdy-lx": 5300}
 
 
 def _empty_battery():
     return {"available": False, "source": None, "level": None, "status": "unknown",
             "plugged": None, "health": None, "temp": None, "voltage": None,
-            "current": None, "technology": None, "capacity_full": None,
-            "capacity_design": None, "cycles": None, "charge_counter": None}
+            "current": None, "current_avg": None, "technology": None,
+            "capacity_full": None, "capacity_full_src": None,
+            "capacity_design": None, "capacity_design_src": None,
+            "cycles": None, "charge_counter": None, "charging_status": None,
+            "battery_low": None, "charge_time_left": None, "energy": None,
+            "max_charger": None, "soh": None, "units": None, "raw": {}}
+
+
+class BatteryCalibration(object):
+    """Запоминает выводы о единицах/знаке тока и замеры фактической ёмкости.
+
+    У Honor (MagicOS) ток и счётчик заряда приходят в мА/мА·ч вместо µA/µA·ч,
+    а у части прошивок знак тока перевёрнут — это определяется по наблюдениям
+    и сохраняется, чтобы значения не «прыгали»."""
+
+    def __init__(self, path=None):
+        self.path = path or os.path.join(APP_DIR, "battery_calibration.json")
+        self.d = {"sign_votes": 0, "fcc": []}
+        try:
+            with open(self.path) as f:
+                self.d.update(json.load(f))
+        except Exception:
+            pass
+
+    def save(self):
+        try:
+            with open(self.path, "w") as f:
+                json.dump(self.d, f)
+        except Exception:
+            pass
+
+    def vote_sign(self, current_ma, status):
+        """+1 если знак совпадает со статусом (заряд «+», разряд «−»), иначе −1."""
+        if current_ma is None or abs(current_ma) < 5:
+            return
+        if status == "discharging":
+            good = current_ma < 0
+        elif status == "charging":
+            good = current_ma > 0
+        else:
+            return
+        v = self.d.get("sign_votes", 0) + (1 if good else -1)
+        self.d["sign_votes"] = max(-20, min(20, v))
+        self.save()
+
+    @property
+    def inverted(self):
+        return self.d.get("sign_votes", 0) <= -3
+
+    def add_fcc(self, mah):
+        lst = self.d.setdefault("fcc", [])
+        if lst and abs(lst[-1] - mah) < 1:
+            return
+        lst.append(round(mah, 1))
+        self.d["fcc"] = lst[-30:]
+        self.save()
+
+    def fcc_median(self):
+        lst = sorted(self.d.get("fcc") or [])
+        if not lst:
+            return None, 0
+        return lst[len(lst) // 2], len(lst)
+
+    def reset(self):
+        self.d = {"sign_votes": 0, "fcc": []}
+        self.save()
+
+
+CALIB = None
+
+
+def battery_calibration():
+    global CALIB
+    if CALIB is None:
+        CALIB = BatteryCalibration()
+    return CALIB
+
+
+def is_magicos():
+    """Honor MagicOS (единицы тока и заряда — мА / мА·ч)."""
+    if "magicos" in _jni_cache:
+        return _jni_cache["magicos"]
+    res = False
+    ctx = android_context()
+    if ctx is not None:
+        try:
+            pm = ctx.getPackageManager()
+            res = bool(pm.hasSystemFeature("com.hihonor.system.feature")
+                       or pm.hasSystemFeature("com.hihonor.software.features.honor"))
+        except Exception:
+            pass
+    if not res:
+        res = (getprop("ro.product.manufacturer", "") or "").lower() == "honor" or \
+            bool(getprop("ro.build.version.magic") or getprop("msc.sys.version"))
+    _jni_cache["magicos"] = res
+    return res
+
+
+def design_capacity():
+    """Паспортная ёмкость (мА·ч) и откуда она взята."""
+    if "design_cap" in _jni_cache:
+        return _jni_cache["design_cap"]
+    result = (None, None)
+    ctx = android_context()
+    if ctx is not None:
+        try:
+            PowerProfile = jclass("com.android.internal.os.PowerProfile")
+            pp = PowerProfile(ctx)
+            cap = float(pp.getBatteryCapacity())
+            if cap <= 0:
+                cap = float(pp.getAveragePower("battery.capacity"))
+            if 500 < cap < 30000:
+                result = (cap, "PowerProfile (power_profile.xml)")
+        except Exception:
+            pass
+    if result[0] is None:
+        for prop in ("ro.config.hw_battery_capacity", "ro.boot.battery_capacity",
+                     "persist.sys.battery_capacity", "ro.vendor.battery.capacity"):
+            v = getprop(prop)
+            if v and v.isdigit() and 500 < int(v) < 30000:
+                result = (float(v), "getprop %s" % prop)
+                break
+    if result[0] is None:
+        names = " ".join(filter(None, [getprop("ro.product.model"),
+                                       getprop("ro.product.marketname"),
+                                       getprop("ro.config.marketing_name")])).lower()
+        for key, mah in KNOWN_BATTERY_MAH.items():
+            if key in names:
+                result = (float(mah), "Справочник модели")
+                break
+    _jni_cache["design_cap"] = result
+    return result
+
+
+def _valid_int(v):
+    return v is not None and v not in (INT_MIN, INT_MAX, LONG_MIN)
 
 
 def _battery_android(b):
     ctx = android_context()
     if ctx is None:
         return False
+    raw = b["raw"]
     try:
         Intent = jclass("android.content.Intent")
         IntentFilter = jclass("android.content.IntentFilter")
@@ -519,40 +663,123 @@ def _battery_android(b):
         intent = ctx.registerReceiver(None, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         if intent is None:
             return False
-        level = intent.getIntExtra(BM.EXTRA_LEVEL, -1)
-        scale = intent.getIntExtra(BM.EXTRA_SCALE, 100) or 100
+        level = intent.getIntExtra("level", -1)
+        scale = intent.getIntExtra("scale", 100) or 100
         b["level"] = 100.0 * level / scale if level >= 0 else None
-        b["status"] = STATUS_API.get(intent.getIntExtra(BM.EXTRA_STATUS, 1), "unknown")
-        b["health"] = HEALTH_API.get(intent.getIntExtra(BM.EXTRA_HEALTH, 1))
-        b["plugged"] = PLUGGED_API.get(intent.getIntExtra(BM.EXTRA_PLUGGED, 0))
-        t = intent.getIntExtra(BM.EXTRA_TEMPERATURE, -10000)
-        b["temp"] = t / 10.0 if t > -10000 else None
-        v = intent.getIntExtra(BM.EXTRA_VOLTAGE, -1)
-        b["voltage"] = (v / 1000.0 if v > 100 else float(v)) if v > 0 else None
-        b["technology"] = intent.getStringExtra(BM.EXTRA_TECHNOLOGY)
+        st = intent.getIntExtra("status", 1)
+        b["status"] = STATUS_API.get(st, "unknown")
+        b["health"] = HEALTH_API.get(intent.getIntExtra("health", 1))
+        b["plugged"] = PLUGGED_API.get(intent.getIntExtra("plugged", 0), "Другой")
+        t = intent.getIntExtra("temperature", INT_MIN)
+        raw.update(level=level, scale=scale, status=st, temperature=t)
+        if -1000 < t < 1000:
+            b["temp"] = t / 10.0
+        v = intent.getIntExtra("voltage", -1)
+        raw["voltage"] = v
+        if v > 0:  # мВ по спецификации; страховка от В и µВ
+            b["voltage"] = v if v < 100 else (v / 1e6 if v > 100000 else v / 1000.0)
+        b["technology"] = intent.getStringExtra("technology")
         try:
-            cycles = intent.getIntExtra("android.os.extra.CYCLE_COUNT", -1)  # Android 14+
-            b["cycles"] = cycles if cycles >= 0 else None
+            b["battery_low"] = bool(intent.getBooleanExtra("battery_low", False))
         except Exception:
             pass
+        cyc = intent.getIntExtra("android.os.extra.CYCLE_COUNT", -1)  # API 34+
+        raw["cycle_count"] = cyc
+        if cyc > 0:
+            b["cycles"] = cyc
+        cs = intent.getIntExtra("android.os.extra.CHARGING_STATUS", -1)  # API 34+
+        raw["charging_status"] = cs
+        b["charging_status"] = CHARGING_STATUS_API.get(cs)
+        mcc = intent.getIntExtra("max_charging_current", -1)   # µA
+        mcv = intent.getIntExtra("max_charging_voltage", -1)   # µV
+        raw.update(max_charging_current=mcc, max_charging_voltage=mcv)
+        if mcc > 0 and b["status"] in ("charging", "full"):
+            volts = (mcv if mcv > 0 else 5000000) / 1e6
+            amps = mcc / 1e6
+            b["max_charger"] = (amps, volts, amps * volts)
+
+        bm = ctx.getSystemService(jclass("android.content.Context").BATTERY_SERVICE)
+        cc = cur = cur_avg = None
         try:
-            bm = ctx.getSystemService(jclass("android.content.Context").BATTERY_SERVICE)
-            cur = bm.getIntProperty(BM.BATTERY_PROPERTY_CURRENT_NOW)
-            if cur not in (0, -2147483648, 2147483647):
-                b["current"] = cur / 1000.0 if abs(cur) > 20000 else float(cur)
             cc = bm.getIntProperty(BM.BATTERY_PROPERTY_CHARGE_COUNTER)
-            if cc > 0:
-                b["charge_counter"] = cc / 1000.0
+            raw["charge_counter"] = cc
         except Exception:
             pass
+        try:
+            cur = bm.getIntProperty(BM.BATTERY_PROPERTY_CURRENT_NOW)
+            raw["current_now"] = cur
+        except Exception:
+            pass
+        try:
+            cur_avg = bm.getIntProperty(BM.BATTERY_PROPERTY_CURRENT_AVERAGE)
+            raw["current_average"] = cur_avg
+        except Exception:
+            pass
+        try:
+            e = bm.getLongProperty(BM.BATTERY_PROPERTY_ENERGY_COUNTER)
+            raw["energy_counter"] = e
+            if _valid_int(e) and e > 0:
+                b["energy"] = e / 1e9  # нВт·ч -> Вт·ч
+        except Exception:
+            pass
+        try:
+            ms = bm.computeChargeTimeRemaining()
+            raw["charge_time_remaining"] = ms
+            if ms > 0:
+                b["charge_time_left"] = ms / 1000.0
+        except Exception:
+            pass
+        try:  # системное API (BATTERY_STATS) — обычно SecurityException
+            soh = bm.getIntProperty(10)
+            if _valid_int(soh) and 0 < soh <= 100:
+                b["soh"] = soh
+        except Exception:
+            pass
+
+        # --- Единицы счётчика заряда: µA·ч по спецификации, мА·ч у Honor ---
+        honor = is_magicos()
+        counter_in_mah = None
+        if _valid_int(cc) and cc > 0 and level > 0:
+            per_full = cc * 100.0 / max(b["level"], 1)
+            counter_in_mah = per_full < 500000  # < 500 мА·ч в µA·ч не бывает
+            b["charge_counter"] = cc if counter_in_mah else cc / 1000.0
+
+        # --- Единицы тока ---
+        def to_ma(x):
+            if not _valid_int(x) or x == 0:
+                return None
+            if counter_in_mah is True or (counter_in_mah is None and honor):
+                # мА; но очень большое значение — всё же µA
+                return x / 1000.0 if abs(x) > 20000 else float(x)
+            if counter_in_mah is False:
+                return x / 1000.0
+            return x / 1000.0 if abs(x) > 20000 else float(x)  # эвристика vtools
+
+        unit = ("мА / мА·ч" if counter_in_mah else "µA / µA·ч") if counter_in_mah is not None \
+            else ("мА (MagicOS)" if honor else "авто")
+        b["units"] = unit
+
+        calib = battery_calibration()
+        cur_ma = to_ma(cur)
+        calib.vote_sign(cur_ma, b["status"])
+        sign = -1 if calib.inverted else 1
+        if cur_ma is not None:
+            b["current"] = sign * cur_ma
+        avg_ma = to_ma(cur_avg)
+        if avg_ma is not None:
+            b["current_avg"] = sign * avg_ma
+        b["sign_inverted"] = calib.inverted
+
         b["available"] = b["level"] is not None
-        b["source"] = "Android API"
+        b["source"] = "Android API" + (" (Honor MagicOS)" if honor else "")
         return b["available"]
-    except Exception:
+    except Exception as e:
+        raw["error"] = str(e)
         return False
 
 
 def _battery_sysfs(b):
+    """Запасной путь: /sys/class/power_supply. На Android 10+ обычно закрыт SELinux."""
     base = None
     for p in glob.glob("/sys/class/power_supply/*"):
         if (read_file(p + "/type") or "").lower() == "battery":
@@ -564,9 +791,11 @@ def _battery_sysfs(b):
     if level is None:
         return False
 
-    def micro(name, div=1000.0):
+    def micro(name):
         v = read_int(base + "/" + name)
-        return v / div if v is not None else None
+        if v is None or v <= 0:
+            return None
+        return v / 1000.0 if v > 100000 else float(v)  # µA·ч или мА·ч
 
     if b["level"] is None:
         b["level"] = float(level)
@@ -585,13 +814,18 @@ def _battery_sysfs(b):
             b["voltage"] = v / 1e6 if v > 100000 else v / 1000.0
     if b["current"] is None:
         cur = read_int(base + "/current_now")
-        if cur is not None:
+        if cur:
             b["current"] = cur / 1000.0 if abs(cur) > 20000 else float(cur)
     b["technology"] = b["technology"] or read_file(base + "/technology")
-    b["capacity_full"] = micro("charge_full")
-    b["capacity_design"] = micro("charge_full_design")
+    full = micro("charge_full")
+    if full:
+        b["capacity_full"], b["capacity_full_src"] = full, "sysfs charge_full"
+    design = micro("charge_full_design")
+    if design:
+        b["capacity_design"], b["capacity_design_src"] = design, "sysfs charge_full_design"
     if b["cycles"] is None:
-        b["cycles"] = read_int(base + "/cycle_count")
+        c = read_int(base + "/cycle_count")
+        b["cycles"] = c if c and c > 0 else None
     if b["charge_counter"] is None:
         b["charge_counter"] = micro("charge_counter") or micro("charge_now")
     b["available"] = True
@@ -619,17 +853,41 @@ def _battery_psutil(b):
 def get_battery_info():
     b = _empty_battery()
     _battery_android(b)
-    _battery_sysfs(b)  # дополняет недостающие поля (ёмкость, циклы)
+    try:
+        _battery_sysfs(b)  # дополняет недостающие поля, если вдруг доступно
+    except Exception:
+        pass
     if not b["available"]:
         _battery_psutil(b)
     if b["plugged"] is None and b["status"] in ("charging", "full"):
         b["plugged"] = "Подключено"
+
+    if not b["capacity_design"]:
+        cap, src = design_capacity() if IS_ANDROID else (None, None)
+        b["capacity_design"], b["capacity_design_src"] = cap, src
+
+    # Фактическая ёмкость: счётчик заряда / уровень (только при высоком уровне,
+    # иначе погрешность целочисленного процента слишком велика). Медиана замеров.
+    if not b["capacity_full"] and b.get("charge_counter") and (b.get("level") or 0) >= 80:
+        fcc = b["charge_counter"] * 100.0 / b["level"]
+        design = b.get("capacity_design")
+        if not design or 0.4 * design < fcc < 1.25 * design:
+            battery_calibration().add_fcc(fcc)
+    if not b["capacity_full"]:
+        med, n = battery_calibration().fcc_median()
+        if med:
+            b["capacity_full"] = med
+            b["capacity_full_src"] = "Оценка: счётчик заряда / уровень (%d замер.)" % n
+
     if b["capacity_full"] and b["capacity_design"]:
         b["wear"] = max(0.0, 100.0 * (1 - b["capacity_full"] / b["capacity_design"]))
+        b["health_pct"] = min(100.0, 100.0 * b["capacity_full"] / b["capacity_design"])
     else:
-        b["wear"] = None
+        b["wear"] = b["health_pct"] = None
+    if b.get("soh"):
+        b["health_pct"] = float(b["soh"])
     if b["voltage"] and b["current"] is not None:
-        b["power"] = b["voltage"] * b["current"] / 1000.0
+        b["power"] = b["voltage"] * b["current"] / 1000.0  # Вт, «+» = в батарею
     else:
         b["power"] = None
     return b
@@ -1451,7 +1709,13 @@ class BatteryTab(BaseTab):
     title = "Батарея"
 
     def toolbar(self):
-        return [("Замер сейчас", self._sample), ("Очистить историю", self._clear)]
+        return [("Замер сейчас", self._sample), ("Очистить историю", self._clear),
+                ("Сброс калибровки", self._reset_calib)]
+
+    def _reset_calib(self, *_):
+        battery_calibration().reset()
+        self.data.monitor.add(INFO, "Батарея", "Калибровка тока и ёмкости сброшена")
+        self.refresh()
 
     def _sample(self, *_):
         self.data.history.add(get_battery_info(), force=True)
@@ -1483,21 +1747,57 @@ class BatteryTab(BaseTab):
         self.row("Температура", "%.1f °C" % t if t is not None else None,
                  color=temp_color(t + 20) if t is not None else None)
         self.row("Напряжение", "%.3f В" % b["voltage"] if b.get("voltage") else None)
-        if b.get("current") is not None:
-            self.row("Ток", "%.0f мА" % b["current"])
+        cur = b.get("current")
+        if cur is not None:
+            self.row("Ток", "%+.0f мА (%s)" % (cur, "в батарею" if cur > 0 else "из батареи"),
+                     color=THEME["ok"] if cur > 0 else None)
+        else:
+            self.row("Ток", None)
+        if b.get("current_avg") is not None:
+            self.row("Средний ток", "%+.0f мА" % b["current_avg"])
         if b.get("power") is not None:
-            self.row("Мощность", "%.2f Вт" % abs(b["power"]))
+            p = b["power"]
+            self.row("Мощность", "%.2f Вт (%s)" % (abs(p), "зарядка" if p > 0 else "расход"))
+        if b.get("max_charger"):
+            a, v, w = b["max_charger"]
+            self.row("Зарядное устройство (лимит)", "%.2f А × %.1f В ≈ %.1f Вт" % (a, v, w))
+        if b.get("charging_status"):
+            self.row("Режим зарядки", b["charging_status"])
+        if b.get("charge_time_left"):
+            self.row("До полной (оценка Android)", fmt_duration(b["charge_time_left"]),
+                     color=THEME["info"])
+
+        self.section("Ёмкость и износ")
         if b.get("charge_counter"):
             self.row("Текущий заряд", "%.0f мА·ч" % b["charge_counter"])
-        if b.get("capacity_design"):
-            self.row("Проектная ёмкость", "%.0f мА·ч" % b["capacity_design"])
+        self.row("Паспортная ёмкость", "%.0f мА·ч" % b["capacity_design"]
+                 if b.get("capacity_design") else None)
+        if b.get("capacity_design_src"):
+            self.row("  источник", b["capacity_design_src"], color=THEME["muted"])
         if b.get("capacity_full"):
             self.row("Фактическая ёмкость", "%.0f мА·ч" % b["capacity_full"])
+            self.row("  источник", b.get("capacity_full_src"), color=THEME["muted"])
+        else:
+            self.row("Фактическая ёмкость", "Нужен заряд ≥ 80 %", color=THEME["muted"])
+        if b.get("health_pct") is not None:
+            hp = b["health_pct"]
+            self.bar("Здоровье батареи", "%.0f %%" % hp, hp,
+                     color=level_color(hp, reverse=True, warn=20, crit=40))
         if b.get("wear") is not None:
             self.row("Износ", "%.1f %%" % b["wear"], color=level_color(b["wear"], warn=20, crit=40))
-        if b.get("cycles") is not None:
-            self.row("Циклы зарядки", b["cycles"])
+        if b.get("energy"):
+            self.row("Энергия", "%.2f Вт·ч" % b["energy"])
+        self.row("Циклы зарядки", b.get("cycles") if b.get("cycles") is not None else
+                 "Прошивка не сообщает")
+        if b.get("battery_low"):
+            self.row("Низкий заряд", "Да (системный флаг)", color=THEME["warn"])
         self.row("Источник данных", b.get("source"))
+        self.row("Единицы тока/заряда", b.get("units"))
+        if b.get("sign_inverted"):
+            self.row("Знак тока", "Инвертирован прошивкой (исправлено)", color=THEME["muted"])
+        if (b.get("capacity_full_src") or "").startswith("Оценка") and b.get("capacity_design"):
+            self.note("Фактическая ёмкость оценивается по счётчику заряда контроллера. "
+                      "На MediaTek он иногда равен профилю батареи, тогда износ не виден.")
 
         self.section("Время работы")
         self.row("С момента включения", fmt_duration(self.data.system.get("uptime")))
@@ -1545,6 +1845,12 @@ class BatteryTab(BaseTab):
         else:
             self.note("Зарядок пока не зафиксировано. Подключите зарядное устройство, "
                       "пока приложение открыто.")
+
+        raw = b.get("raw") or {}
+        if raw:
+            self.section("Сырые значения (диагностика)")
+            self.table(["Поле", "Значение"], [[k, str(v)] for k, v in sorted(raw.items())],
+                       [0.55, 0.45])
 
 
 # ---------------------------------------------------------------------------
