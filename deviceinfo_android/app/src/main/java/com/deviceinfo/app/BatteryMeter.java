@@ -174,13 +174,21 @@ public final class BatteryMeter {
     /** Фоновый вызов раз в 1.5 с (из BatteryPage.tick). */
     static synchronized void tick(Context ctx, double designMah) {
         try {
+            Measurement m = sample(ctx, designMah);
+            if (m != null) save(ctx, m);
+        } catch (Throwable ignored) { }
+    }
+
+    /** Читает уровень/статус/ток из системы и делает один шаг. Общая логика для приложения и службы. */
+    static synchronized Measurement sample(Context ctx, double designMah) {
+        try {
             Intent it = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-            if (it == null) return;
+            if (it == null) return null;
             int level = it.getIntExtra("level", -1), scale = it.getIntExtra("scale", 100);
             if (scale <= 0) scale = 100;
-            if (level < 0) return;
+            if (level < 0) return null;
             int pct = (int) Math.round(100.0 * level / scale);
-            int dir = dirOfStatus(it.getIntExtra("status", 1));
+            int status = it.getIntExtra("status", 1);
             int plugged = it.getIntExtra("plugged", 0);
             double ma = Double.NaN;
             try {
@@ -190,10 +198,17 @@ public final class BatteryMeter {
                     ma = BatteryPage.currentToMa(raw, -1, true);
                 }
             } catch (Throwable ignored) { }
-            if (!Double.isNaN(ma)) recordCurrent(System.currentTimeMillis(), ma * currentSign);
-            Measurement m = step(STATE, SystemClock.elapsedRealtime(), pct, dir, plugged, ma, designMah);
-            if (m != null) save(ctx, m);
-        } catch (Throwable ignored) { }
+            return onSample(ctx, System.currentTimeMillis(), SystemClock.elapsedRealtime(), pct, status, plugged, ma, designMah);
+        } catch (Throwable ignored) { return null; }
+    }
+
+    /** Один отсчёт (тестовая точка входа без Android-источников). Сохраняет завершённый замер. */
+    static synchronized Measurement onSample(Context ctx, long wallMs, long nowMs, int pct, int status,
+                                             int plugged, double ma, double designMah) {
+        if (!Double.isNaN(ma)) recordCurrent(wallMs, ma * currentSign);
+        Measurement m = step(STATE, nowMs, pct, dirOfStatus(status), plugged, ma, designMah);
+        if (m != null) save(ctx, m);
+        return m;
     }
 
     private static void save(Context ctx, Measurement m) {

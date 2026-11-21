@@ -9,7 +9,7 @@ public final class Section {
     public static final String NA = "Нет доступа";
 
     public static final class Item {
-        public final int type; // 0 header, 1 row, 2 bar, 3 note, 4 table
+        public final int type; // 0 header, 1 row, 2 bar, 3 note, 4 table, 5 action (key = id, value = подпись, color != 0 — основная)
         public String key, value;
         public int color;
         public float pct;
@@ -50,6 +50,13 @@ public final class Section {
         Item i = new Item(3); i.value = text; i.color = color; items.add(i);
     }
 
+    /** Кнопка действия; клик вызывает MainActivity.onAction(id). */
+    public void action(String id, String label) { action(id, label, false); }
+
+    public void action(String id, String label, boolean primary) {
+        Item i = new Item(5); i.key = id; i.value = label; i.color = primary ? 1 : 0; items.add(i);
+    }
+
     public void table(String[] headers, List<String[]> rows, float[] ratios) {
         Item i = new Item(4); i.headers = headers; i.rows = rows; i.ratios = ratios; items.add(i);
     }
@@ -69,6 +76,7 @@ public final class Section {
                 case 0: sb.append("\n[").append(i.key).append("]\n"); break;
                 case 1: case 2: sb.append(i.key).append(": ").append(i.value).append('\n'); break;
                 case 3: sb.append("  ").append(i.value).append('\n'); break;
+                case 5: sb.append("[кнопка] ").append(i.value).append('\n'); break;
                 case 4:
                     sb.append(String.join(" | ", i.headers)).append('\n');
                     for (String[] r : i.rows) sb.append(String.join(" | ", r)).append('\n');

@@ -75,6 +75,7 @@ public class MainActivity extends Activity {
                 background.execute(() -> {
                     try {
                         for (Page p : pages) {
+                            if (p instanceof BatteryPage && BatteryWearService.running) continue; // замер ведёт служба
                             try { synchronized (p) { p.tick(app); } } catch (Throwable ignored) { }
                         }
                     } finally { ticking.set(false); }
@@ -240,6 +241,37 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Нажатие кнопки-действия (UI-поток). */
+    void onAction(String id) {
+        if ("meter_start".equals(id)) {
+            if (Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                try { requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2); } catch (Throwable ignored) { }
+            }
+            try { startForegroundService(new Intent(this, BatteryWearService.class)); }
+            catch (Throwable e) { toastStatus("Не удалось запустить замер: " + e.getMessage()); }
+        } else if ("meter_stop".equals(id)) {
+            try {
+                startService(new Intent(this, BatteryWearService.class).setAction(BatteryWearService.ACTION_STOP));
+            } catch (Throwable ignored) { }
+        } else if ("battery_opt".equals(id)) {
+            try {
+                startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        android.net.Uri.parse("package:" + getPackageName())));
+            } catch (Throwable e) {
+                try { startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); }
+                catch (Throwable ignored) { }
+            }
+        }
+        refresh();
+        ui.postDelayed(this::refresh, 600);
+    }
+
+    private void toastStatus(String m) {
+        statusMsg = m; statusUntil = System.currentTimeMillis() + 5000;
+        if (status != null) status.setText(m);
+    }
+
     void refresh() {
         if (busy) return;
         busy = true;
@@ -285,7 +317,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         for (Section.Item it : s.items) {
             sb.append(it.type).append('|');
-            if (it.type == 0 || it.type == 1 || it.type == 2) sb.append(it.key);
+            if (it.type == 0 || it.type == 1 || it.type == 2 || it.type == 5) sb.append(it.key);
             if (it.type == 4) sb.append(it.rows.size()).append('x').append(it.headers.length);
             sb.append('\n');
         }
@@ -296,6 +328,7 @@ public class MainActivity extends Activity {
     static final class RowH { TextView value; }
     static final class BarH { TextView value; ProgressBar pb; GradientDrawable fill; }
     static final class NoteH { TextView text; }
+    static final class ActionH { Button button; }
     static final class TableH { List<TextView[]> cells = new ArrayList<>(); }
 
     void render(Section s, boolean live) {
@@ -333,6 +366,10 @@ public class MainActivity extends Activity {
                     NoteH n = (NoteH) h;
                     setText(n.text, it.value);
                     n.text.setTextColor(color(it.color));
+                    break;
+                }
+                case 5: {
+                    setText(((ActionH) h).button, it.value);
                     break;
                 }
                 case 4: {
@@ -429,6 +466,20 @@ public class MainActivity extends Activity {
                     NoteH nh = new NoteH();
                     nh.text = n;
                     holders.add(nh);
+                    break;
+                }
+                case 5: {
+                    final String id = it.key;
+                    Button b = makeButton(it.value);
+                    b.setTextSize(15);
+                    ((GradientDrawable) b.getBackground()).setColor(it.color != 0 ? ACCENT : BTN);
+                    b.setOnClickListener(v -> onAction(id));
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(46));
+                    lp.setMargins(dp(12), dp(6), dp(12), dp(6));
+                    content.addView(b, lp);
+                    ActionH ah = new ActionH();
+                    ah.button = b;
+                    holders.add(ah);
                     break;
                 }
                 case 4: {

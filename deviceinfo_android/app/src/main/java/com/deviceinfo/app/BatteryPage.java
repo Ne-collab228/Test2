@@ -115,6 +115,7 @@ public class BatteryPage implements Page {
 
     @Override public void tick(Context ctx) {
         design(ctx);
+        if (BatteryWearService.running) return; // службе принадлежит замер
         BatteryMeter.tick(ctx, designCache[0]);
     }
 
@@ -136,6 +137,9 @@ public class BatteryPage implements Page {
         if (m.startsWith("JDY-")) return "Литий-полимерная (Li-Po), 5200 мА·ч (тип.), 35 Вт SuperCharge";
         return null;
     }
+
+    /** Паспортная ёмкость, мА·ч (0 — неизвестна); для фоновой службы. */
+    double designMah(Context ctx) { design(ctx); return designCache[0]; }
 
     private synchronized void design(Context ctx) {
         if (designCache != null) return;
@@ -370,6 +374,19 @@ public class BatteryPage implements Page {
         double[] pr = BatteryMeter.progress();
         if (pr[0] > 0) out.row("Идёт замер", Util.f("накоплено %.1f мА·ч за %.0f %% (нужно %d %%)", pr[1], pr[2], BatteryMeter.NEED_LEVELS), Section.INFO);
         else out.row("Идёт замер", "Ожидание смены уровня заряда…", Section.MUTED);
+        if (BatteryWearService.running) {
+            out.row("Фоновый замер", "идёт (" + BatteryWearService.runCount + "/" + BatteryWearService.TARGET + ")…", Section.INFO);
+            out.action("meter_stop", "Остановить замер");
+        } else {
+            out.action("meter_start", "Запустить замер в фоне", true);
+        }
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(ctx.getPackageName())) {
+                out.action("battery_opt", "Разрешить работу в фоне");
+                out.note("MagicOS может выгружать приложения в фоне. Также: Настройки → Батарея → Запуск приложений → Device Info → Управлять вручную (включить всё).");
+            }
+        } catch (Throwable ignored) { }
         double healthPct = Double.NaN, wear = Double.NaN; String src = "";
         if (!Double.isNaN(fullMah) && designMah > 0) {
             wear = Math.max(0, 100 * (1 - fullMah / designMah));
