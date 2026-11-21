@@ -202,4 +202,80 @@ public class HelpersTest {
         assertEquals(5100, BatteryMeter.medianCapacity(l), 0);
         assertTrue(Double.isNaN(BatteryMeter.medianCapacity(new java.util.ArrayList<>())));
     }
+
+    private static java.util.List<BatteryHistory.Sample> steps(int minutes, int everyMin, double from, double stepPct, boolean ch) {
+        java.util.List<BatteryHistory.Sample> l = new java.util.ArrayList<>();
+        for (int m = 0; m <= minutes; m++)
+            l.add(new BatteryHistory.Sample(m * 60_000L, from + stepPct * (m / everyMin), ch ? 2 : 3, ch, 30, 4.0));
+        return l;
+    }
+
+    @Test public void regressionRate_integerSteps_6perHour() {
+        java.util.List<BatteryHistory.Sample> l = steps(40, 10, 80, -1, false);
+        long now = 40 * 60_000L;
+        assertEquals(6.0, BatteryHistory.dischargeRate(l, now), 0.5);
+        double[] e = BatteryHistory.estimate(l, now, 76, false);
+        assertEquals(1, e[0], 0);
+        assertEquals(76 / 6.0 * 3600, e[1], 0.1 * 76 / 6.0 * 3600);
+    }
+
+    @Test public void regressionRate_needsSpanAndChange() {
+        // 10 мин и 1 % — мало
+        assertTrue(Double.isNaN(BatteryHistory.dischargeRate(steps(10, 10, 80, -1, false), 10 * 60_000L)));
+        // 20 мин, но уровень не менялся
+        assertTrue(Double.isNaN(BatteryHistory.dischargeRate(steps(20, 100, 80, -1, false), 20 * 60_000L)));
+        // устаревший последний замер
+        assertTrue(Double.isNaN(BatteryHistory.dischargeRate(steps(40, 10, 80, -1, false), 60 * 60_000L)));
+    }
+
+    @Test public void regressionRate_gapResetsSegment() {
+        java.util.List<BatteryHistory.Sample> l = new java.util.ArrayList<>();
+        for (int m = 0; m <= 10; m++) l.add(new BatteryHistory.Sample(m * 60_000L, 90 - m / 5, 3, false, 30, 4.0));
+        for (int m = 0; m <= 10; m++) l.add(new BatteryHistory.Sample((60 + m) * 60_000L, 70, 3, false, 30, 4.0));
+        assertTrue(Double.isNaN(BatteryHistory.dischargeRate(l, 70 * 60_000L)));
+    }
+
+    @Test public void regressionRate_charging() {
+        java.util.List<BatteryHistory.Sample> l = steps(30, 3, 20, 1, true); // 1 % / 3 мин = 20 %/ч
+        assertEquals(20.0, BatteryHistory.chargeRate(l, 30 * 60_000L), 1.5);
+    }
+
+    @Test public void history_oldJsonWithoutCurrent_isNaN() {
+        BatteryHistory.Sample s = new BatteryHistory.Sample(1, 50, 3, false, 30, 4.0);
+        assertTrue(Double.isNaN(s.ma));
+    }
+
+    @Test public void evenness_grading() {
+        java.util.List<Double> flat = new java.util.ArrayList<>(), mid = new java.util.ArrayList<>(), wild = new java.util.ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            flat.add(-300.0 - (i % 2) * 20);       // CV ~3 %
+            mid.add(i % 2 == 0 ? -300.0 : -600.0); // CV ~33 %
+            wild.add(i % 2 == 0 ? -100.0 : -900.0);// CV ~80 %
+        }
+        assertEquals(1, BatteryMeter.evennessGrade(flat));
+        assertEquals(2, BatteryMeter.evennessGrade(mid));
+        assertEquals(3, BatteryMeter.evennessGrade(wild));
+        assertEquals(0, BatteryMeter.evennessGrade(flat.subList(0, 5)));
+    }
+
+    @Test public void currentRing_tenSecondBuckets() {
+        BatteryMeter.CurrentRing r = new BatteryMeter.CurrentRing();
+        long t0 = 1_000_000_000L;
+        for (int i = 0; i < 60; i++) r.add(t0 + i * 1500L, -300 - (i % 7)); // 90 с ~ 9 корзин
+        java.util.List<Double> p = r.points(t0 + 90_000, BatteryMeter.WIN5_MS);
+        assertTrue(p.size() >= 8 && p.size() <= 10);
+        assertEquals(-303, r.avg(t0 + 90_000, BatteryMeter.WIN5_MS), 3);
+        r.add(t0 + 3 * 3600_000L, -100);
+        assertEquals(1, r.b.size()); // старое вытеснено
+    }
+
+    @Test public void github_redactIps() {
+        String r = "Bluetooth: Да\nIP-адреса: wlan0: fe80::98e0:5aff:fe5f:766d\nwlan0: 10.104.41.22\nDNS: 10.104.41.162\nBluetooth LE: Да\n";
+        String o = GitHubUploader.redact(r);
+        assertFalse(o, o.contains("10.104"));
+        assertFalse(o, o.contains("fe80"));
+        assertTrue(o, o.contains("IP-адреса: [скрыто]"));
+        assertTrue(o, o.contains("Bluetooth LE: Да"));
+        assertTrue(o, o.contains("Bluetooth: Да"));
+    }
 }

@@ -452,7 +452,7 @@ public class BatteryPage implements Page {
         }
         double dr = BatteryHistory.dischargeRate(history.samples, now);
         out.row("Скорость разряда", Double.isNaN(dr) ? (chargingNow ? null : gather) : Util.f("%.1f %%/ч", dr),
-                Double.isNaN(dr) ? Section.MUTED : 0);
+                Double.isNaN(dr) ? Section.MUTED : Section.NORMAL);
         if (!chargingNow)
             for (BatteryHistory.Session s : history.allSessions())
                 if (!s.open) { out.row("С последней зарядки", Util.duration((now - s.end) / 1000.0)); break; }

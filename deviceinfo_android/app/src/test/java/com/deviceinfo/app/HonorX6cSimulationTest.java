@@ -274,6 +274,24 @@ public class HonorX6cSimulationTest {
         assertTrue(t, t.contains("Ожидание смены уровня"));
     }
 
+    /** Старые метрики стабильности удалены; новые разделы «Время работы» и «Потребление». */
+    @Test public void battery_consumptionSection() throws Exception {
+        setup("sysroot");
+        BatteryMeter.reset();
+        realBattery(52, 3500000);
+        Page bp = new BatteryPage();
+        for (int i = 0; i < 3; i++) bp.tick(ctx);
+        String t = build(bp, ctx).toText();
+        for (String l : t.split("\n"))
+            if (l.contains("Осталось") || l.contains("Скорость разряда") || l.contains("Средн") || l.contains("Мин / макс")
+                    || l.contains("Ровность") || l.contains("Время работы") || l.contains("Потребление"))
+                System.out.println("X6C-BATT: " + l);
+        assertFalse(t, t.contains("Стабильность разряда") || t.contains("Коэффициент вариации") || t.contains("скачков"));
+        assertTrue(t, t.contains("Потребление"));
+        assertTrue(t, t.contains("Ровность потребления"));
+        assertTrue(t, t.contains("Сбор данных… (нужно ≥ 15 мин и ≥ 2 %)"));
+    }
+
     /** С первого обновления статус «разряжается» + положительный ток не должен показываться как «+ в батарею / зарядка». */
     @Test public void battery_firstRefreshSignConsistentWithStatus() throws Exception {
         setup("sysroot");
