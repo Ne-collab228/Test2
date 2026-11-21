@@ -23,7 +23,10 @@ public class DisplayPage implements Page {
     public static String aspectRatio(int w, int h) {
         if (w <= 0 || h <= 0) return null;
         double r = Math.max(w, h) / (double) Math.min(w, h) * 9.0;
-        r = Math.round(r * 10) / 10.0;
+        // 1604/720 = 20.05:9 — в характеристиках это «20:9»: близкое к целому округляем до целого,
+        // иначе до половины (19.5:9).
+        if (Math.abs(r - Math.round(r)) <= 0.15) r = Math.round(r);
+        else r = Math.round(r * 2) / 2.0;
         String s = r == Math.floor(r) ? String.valueOf((long) r) : Util.f("%.1f", r);
         return s + ":9";
     }

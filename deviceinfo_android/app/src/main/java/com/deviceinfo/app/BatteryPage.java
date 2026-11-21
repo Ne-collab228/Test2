@@ -205,7 +205,9 @@ public class BatteryPage implements Page {
             votes = Math.max(-20, Math.min(20, votes + vote));
             calib.edit().putInt("sign_votes", votes).apply();
         }
-        boolean inverted = votes <= -3;
+        // Устойчивое решение по накопленным голосам; пока голосов мало — решаем по
+        // текущему замеру, чтобы с первого обновления знак не противоречил статусу.
+        boolean inverted = votes <= -3 || (votes < 3 && vote < 0);
         int sign = inverted ? -1 : 1;
         if (!Double.isNaN(curMa)) curMa *= sign;
         if (!Double.isNaN(avgMa)) avgMa *= sign;
