@@ -409,6 +409,9 @@ public class MainActivity extends Activity {
             EnergyService.start(this);
         } else if ("energy_stop".equals(id)) {
             EnergyService.stop(this);
+        } else if ("hourly_now".equals(id)) {
+            if (EnergyService.hourly(getApplicationContext(), null)) say("Часовой отчёт отправляется…", 8000);
+            else say("Сначала включите слежение за расходом", 8000);
         } else if ("energy_reset".equals(id)) {
             new android.app.AlertDialog.Builder(this, dialogTheme()).setTitle("Сбросить статистику расхода?")
                     .setMessage("Накопленные данные о расходе с экраном выключенным и включённым будут удалены.")
@@ -864,6 +867,11 @@ public class MainActivity extends Activity {
         auto.setTextColor(th.text);
         auto.setChecked(gh().getBoolean("auto_upload", true));
         box.addView(auto);
+        final android.widget.Switch hourly = new android.widget.Switch(this);
+        hourly.setText("Каждый час — короткий отчёт в GitHub, раз в сутки — полный (пока включено слежение за расходом)");
+        hourly.setTextColor(th.text);
+        hourly.setChecked(gh().getBoolean(HourlyReport.PREF_ON, true));
+        box.addView(hourly);
         Button gb = makeButton("Настройки GitHub (токен)", false);
         gb.setOnClickListener(v -> githubSettings(null));
         LinearLayout.LayoutParams gl = new LinearLayout.LayoutParams(-1, dp(44));
@@ -878,7 +886,7 @@ public class MainActivity extends Activity {
                 .setView(sv)
                 .setPositiveButton("Готово", (d, w) -> {
                     sp.edit().putInt("mode", mode[0]).putInt("accent", accent[0]).putLong("period", per[0]).apply();
-                    gh().edit().putBoolean("auto_upload", auto.isChecked()).apply();
+                    gh().edit().putBoolean("auto_upload", auto.isChecked()).putBoolean(HourlyReport.PREF_ON, hourly.isChecked()).apply();
                     period = per[0];
                     if (mode[0] != oldMode || accent[0] != oldAccent) recreate();
                     else { ui.removeCallbacks(tick); if (resumed) ui.post(tick); }

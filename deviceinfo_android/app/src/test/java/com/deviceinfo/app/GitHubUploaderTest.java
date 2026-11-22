@@ -86,6 +86,55 @@ public class GitHubUploaderTest {
         assertEquals("Отчёт: тест", decoded);
     }
 
+    @Test public void uploadBytes() throws Exception {
+        AtomicReference<String[]> got = new AtomicReference<>();
+        start(201, "{\"content\":{\"html_url\":\"u\"}}", got);
+        byte[] data = new byte[]{0x1f, (byte) 0x8b, 8, 0, (byte) 0xff, 0, 1, 2};
+        GitHubUploader.Result r = GitHubUploader.upload("t", "a/b", "br", "x/y.gz", data, "m");
+        assertTrue(r.message, r.ok);
+        JSONObject b = new JSONObject(got.get()[3]);
+        assertArrayEquals(data, java.util.Base64.getDecoder().decode(b.getString("content")));
+    }
+
+    @Test public void listFiles() throws Exception {
+        AtomicReference<String[]> got = new AtomicReference<>();
+        start(200, "[{\"type\":\"file\",\"name\":\"a.txt\",\"path\":\"d x/a.txt\",\"sha\":\"s1\"},"
+                + "{\"type\":\"dir\",\"name\":\"sub\",\"path\":\"d x/sub\",\"sha\":\"s2\"}]", got);
+        java.util.List<GitHubUploader.Entry> l = GitHubUploader.list("t", "a/b", "my br", "d x");
+        assertNotNull(l);
+        assertEquals(1, l.size());
+        assertEquals("a.txt", l.get(0).name);
+        assertEquals("d x/a.txt", l.get(0).path);
+        assertEquals("s1", l.get(0).sha);
+        assertEquals("GET", got.get()[0]);
+        assertEquals("/repos/a/b/contents/d%20x?ref=my+br", got.get()[1]);
+    }
+
+    @Test public void listNotFoundIsEmpty() throws Exception {
+        start(404, "{\"message\":\"Not Found\"}", new AtomicReference<>());
+        java.util.List<GitHubUploader.Entry> l = GitHubUploader.list("t", "a/b", "br", "d");
+        assertNotNull(l);
+        assertTrue(l.isEmpty());
+    }
+
+    @Test public void listServerErrorIsNull() throws Exception {
+        start(500, "{\"message\":\"boom\"}", new AtomicReference<>());
+        assertNull(GitHubUploader.list("t", "a/b", "br", "d"));
+    }
+
+    @Test public void deleteSendsShaAndBranch() throws Exception {
+        AtomicReference<String[]> got = new AtomicReference<>();
+        start(200, "{\"commit\":{}}", got);
+        GitHubUploader.Result r = GitHubUploader.delete("t", "a/b", "br", "d/a.txt", "abc123", "rm");
+        assertTrue(r.message, r.ok);
+        assertEquals("DELETE", got.get()[0]);
+        assertEquals("/repos/a/b/contents/d/a.txt", got.get()[1]);
+        JSONObject b = new JSONObject(got.get()[3]);
+        assertEquals("abc123", b.getString("sha"));
+        assertEquals("br", b.getString("branch"));
+        assertEquals("rm", b.getString("message"));
+    }
+
     @Test public void uploadForbidden() throws Exception {
         AtomicReference<String[]> got = new AtomicReference<>();
         start(403, "{\"message\":\"Resource not accessible by personal access token\"}", got);

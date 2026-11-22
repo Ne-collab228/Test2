@@ -39,10 +39,46 @@ public class EnergyService extends Service {
             if (!running) return;
             final Context app = getApplicationContext();
             if (BgSampler.wanted(app)) { try { exec.execute(() -> BgSampler.tick(app)); } catch (Throwable ignored) { } }
+            if (interactive()) { try { exec.execute(() -> HourlyReport.sample(app)); } catch (Throwable ignored) { } }
             h.postDelayed(this, BgSampler.PERIOD_MS);
         }
     };
     private long lastNotify;
+
+    private static volatile EnergyService self;
+
+    /**
+     * Часовой отчёт (из будильника или по кнопке): работу делает идущая служба в своём потоке.
+     * wl (может быть null) отпускается по окончании. false — служба не запущена.
+     */
+    static boolean hourly(Context c, PowerManager.WakeLock wl) {
+        EnergyService sv = self;
+        if (sv == null || !running) {
+            try { if (wl != null && wl.isHeld()) wl.release(); } catch (Throwable ignored) { }
+            return false;
+        }
+        HourlyReport.schedule(c);
+        final EnergyStats st = stats;
+        final String vn = sv.versionName();
+        try {
+            sv.exec.execute(() -> {
+                try { HourlyReport.run(c, st, vn); }
+                finally { try { if (wl != null && wl.isHeld()) wl.release(); } catch (Throwable ignored) { } }
+            });
+        } catch (Throwable e) {
+            try { if (wl != null && wl.isHeld()) wl.release(); } catch (Throwable ignored) { }
+            return false;
+        }
+        return true;
+    }
+
+    private boolean interactive() {
+        try { return ((PowerManager) getSystemService(POWER_SERVICE)).isInteractive(); } catch (Throwable e) { return false; }
+    }
+
+    private String versionName() {
+        try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Throwable e) { return "?"; }
+    }
 
     @Override public IBinder onBind(Intent intent) { return null; }
 
@@ -78,10 +114,12 @@ public class EnergyService extends Service {
         }
         if (!running) {
             running = true;
+            self = this;
             EnergyStats s = EnergyStats.load(this);
             s.open = null; // что было между остановкой и стартом — неизвестно
             stats = s;
             ChargeLog.load(this);
+            HourlyReport.load(this, s);
             rx = new BroadcastReceiver() {
                 @Override public void onReceive(Context c, Intent i) { onEvent(i); }
             };
@@ -94,6 +132,7 @@ public class EnergyService extends Service {
             Intent sticky = registerReceiver(rx, f);
             if (sticky != null) onEvent(sticky);
             h.post(sample);
+            HourlyReport.schedule(this);
         }
         return START_STICKY;
     }
@@ -123,6 +162,8 @@ public class EnergyService extends Service {
             s.event(SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(), System.currentTimeMillis(),
                     lvl, screen, plugged, busy, audio);
             s.save(this);
+            HourlyReport.event(System.currentTimeMillis(), lvl, screen, plugged, audio, b.getIntExtra("temperature", Integer.MIN_VALUE) / 10.0);
+            HourlyReport.save(this);
             // тест зарядки в фоне
             double[] r = BatteryMeter.read(this);
             int mv = b.getIntExtra("voltage", -1);
@@ -173,6 +214,7 @@ public class EnergyService extends Service {
 
     private synchronized void shutdown() {
         setEnabled(this, false);
+        HourlyReport.cancel(this);
         EnergyStats s = stats;
         if (s != null) {
             Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
@@ -187,6 +229,7 @@ public class EnergyService extends Service {
 
     @Override public void onDestroy() {
         running = false;
+        self = null;
         h.removeCallbacksAndMessages(null);
         exec.shutdownNow();
         EnergyStats s = stats;

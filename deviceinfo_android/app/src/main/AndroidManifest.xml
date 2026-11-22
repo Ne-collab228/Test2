@@ -47,6 +47,7 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Battery drain monitoring (screen on/off statistics)" />
         </service>
+        <receiver android:name=".HourlyReport$Alarm" android:exported="false" />
         <receiver android:name=".EnergyService$Boot" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

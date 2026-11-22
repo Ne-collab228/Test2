@@ -36,5 +36,8 @@ public final class Series {
 
     public synchronized double last() { return n == 0 ? Double.NaN : v[(head - 1 + cap) % cap]; }
 
+    /** Время последней точки (−1 — точек нет). */
+    public synchronized long lastT() { return n == 0 ? -1 : t[(head - 1 + cap) % cap]; }
+
     public synchronized void clear() { n = 0; head = 0; }
 }

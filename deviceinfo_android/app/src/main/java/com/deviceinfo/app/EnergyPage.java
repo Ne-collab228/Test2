@@ -50,6 +50,13 @@ public class EnergyPage implements Page {
             out.row("Слежение за расходом", s.since > 0 ? "идёт с " + new java.text.SimpleDateFormat("dd.MM HH:mm",
                     java.util.Locale.US).format(new java.util.Date(s.since)) : "идёт", Section.OK);
             out.action("energy_stop", "Выключить слежение");
+            boolean tok = !ctx.getSharedPreferences(MainActivity.GH, Context.MODE_PRIVATE).getString("token", "").isEmpty();
+            if (!tok) out.row("Отчёты в GitHub", "нет токена (Настройки GitHub)", Section.MUTED);
+            else if (!HourlyReport.enabled(ctx)) out.row("Отчёты в GitHub", "выключены в настройках", Section.MUTED);
+            else {
+                out.row("Отчёты в GitHub", "каждый час · " + HourlyReport.status(ctx));
+                out.action("hourly_now", "Отправить часовой отчёт сейчас");
+            }
         } else {
             out.row("Слежение за расходом", "выключено", Section.MUTED);
             out.action("energy_start", "Включить слежение", true);
