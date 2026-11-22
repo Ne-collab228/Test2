@@ -392,6 +392,12 @@ public class BatteryPage implements Page {
         // Реальная ёмкость — только по точному замеру; без него — паспортная.
         double capMah = precise != null ? precise.capacityMah : designMah;
         boolean haveDesign = capMah > 0 && !Double.isNaN(lvl);
+        if (chargingNow) Remaining.reset();
+        else if (haveDesign) {
+            String left = Remaining.text(Remaining.hoursLeft(capMah, lvl, now, SystemClock.elapsedRealtime()));
+            if (left != null) out.row("Хватит примерно на", left, Section.INFO);
+            else out.row("Хватит примерно на", "считаю… (≈ 30 с)", Section.MUTED);
+        }
         if (!counterStatic && !Double.isNaN(counter)) {
             out.row("Текущий заряд", Util.f("%.0f мА·ч (счётчик контроллера)", counter), Section.INFO);
         } else if (haveDesign) {
@@ -570,14 +576,14 @@ public class BatteryPage implements Page {
         out.header("Время работы");
         out.row("С момента включения", Util.duration(SystemClock.elapsedRealtime() / 1000.0));
         String gather = "Сбор данных… (нужно ≥ 15 мин и ≥ 2 %)";
-        if (est[0] == 1) out.row("Осталось работы (оценка)", Util.duration(est[1]), Section.OK);
-        else if (est[0] == 2) out.row("До полной зарядки (оценка)", Util.duration(est[1]), Section.INFO);
-        else out.row(chargingNow ? "До полной зарядки (оценка)" : "Осталось работы (оценка)", gather, Section.MUTED);
-        double avg5 = BatteryMeter.currentAvg(now, BatteryMeter.WIN5_MS);
-        if (!chargingNow && haveDesign && !Double.isNaN(avg5) && avg5 < -1) {
-            double remH = capMah * lvl / 100.0 / Math.abs(avg5);
-            out.row("Осталось по текущему расходу", Util.duration(remH * 3600), Section.INFO);
+        if (chargingNow) {
+            if (est[0] == 2) out.row("До полной зарядки (оценка)", Util.duration(est[1]), Section.INFO);
+            else out.row("До полной зарядки (оценка)", gather, Section.MUTED);
+        } else {
+            out.note("«Хватит примерно на» (вверху): первая оценка — через 30 с, дальше она уточняется по среднему "
+                    + "расходу за 10 минут без случайных всплесков и меняется плавно. Долгосрочный расход в простое и с экраном — во вкладке «Энергия».");
         }
+        double avg5 = BatteryMeter.currentAvg(now, BatteryMeter.WIN5_MS);
         double dr = BatteryHistory.dischargeRate(history.samples, now);
         if (!chargingNow)
             out.row("Скорость разряда", Double.isNaN(dr) ? gather : Util.f("%.1f %%/ч", dr),

@@ -101,8 +101,12 @@ public class EnergyPage implements Page {
         if (!Double.isNaN(ma)) {
             out.row("Ток", Util.f("%+.0f мА", ma));
             if (!Double.isNaN(v)) out.row("Мощность", Util.f("%.2f Вт", Math.abs(v * ma / 1000.0)));
-            if (ma < -5 && r != null && cap > 0)
-                out.row("При таком расходе хватит на", Util.duration(cap * r[0] / 100.0 / Math.abs(ma) * 3600), Section.INFO);
+            if (r != null && cap > 0 && r[2] == 0) {
+                String left = Remaining.text(Remaining.hoursLeft(cap, r[0], System.currentTimeMillis(),
+                        android.os.SystemClock.elapsedRealtime()));
+                out.row("Хватит при таком использовании", left != null ? left : "считаю… (≈ 30 с)",
+                        left != null ? Section.INFO : Section.MUTED);
+            }
             out.note("Сейчас приложение открыто и экран включён — это расход «в работе», не в простое.");
         } else out.row("Ток", null);
         out.row("Ёмкость для расчёта", cap > 0 ? Util.f("%.0f мА·ч (%s)", cap, capSrc) : null,
