@@ -55,6 +55,11 @@ public class MainActivity extends Activity {
     private final Map<Integer, Section> cache = new HashMap<>();
     private LinearLayout content;
     private ScrollView scroll;
+    private HorizontalScrollView tabScroll;
+    /** Свайп влево/вправо по содержимому — соседняя вкладка. */
+    private float downX, downY;
+    private long downT;
+    private boolean swipeArea;
     private TextView status;
     private int current = 0;
     private boolean resumed;
@@ -143,6 +148,7 @@ public class MainActivity extends Activity {
 
         // Вкладки-«таблетки» с иконками
         HorizontalScrollView hs = new HorizontalScrollView(this);
+        tabScroll = hs;
         hs.setHorizontalScrollBarEnabled(false);
         LinearLayout tabs = new LinearLayout(this);
         tabs.setPadding(dp(10), dp(8), dp(10), dp(8));
@@ -272,6 +278,51 @@ public class MainActivity extends Activity {
         return b;
     }
 
+    /** Горизонтальный свайп: смещение ≥ 70 dp, в 2 раза больше вертикального, быстрее 0.25 dp/мс. */
+    static int swipeDir(float dx, float dy, long dtMs, float density) {
+        if (dtMs <= 0 || dtMs > 800) return 0;
+        if (Math.abs(dx) < 70 * density || Math.abs(dx) < 2 * Math.abs(dy)) return 0;
+        if (Math.abs(dx) / dtMs < 0.25f * density) return 0;
+        return dx < 0 ? 1 : -1;
+    }
+
+    @Override public boolean dispatchTouchEvent(android.view.MotionEvent e) {
+        try {
+            int a = e.getActionMasked();
+            if (a == android.view.MotionEvent.ACTION_DOWN) {
+                int[] loc = new int[2];
+                swipeArea = false;
+                if (scroll != null) {
+                    scroll.getLocationOnScreen(loc);
+                    swipeArea = e.getRawY() >= loc[1] && e.getRawY() <= loc[1] + scroll.getHeight();
+                }
+                downX = e.getRawX(); downY = e.getRawY(); downT = e.getEventTime();
+            } else if (a == android.view.MotionEvent.ACTION_POINTER_DOWN) {
+                swipeArea = false; // два пальца — не свайп
+            } else if (a == android.view.MotionEvent.ACTION_UP && swipeArea) {
+                swipeArea = false;
+                int dir = swipeDir(e.getRawX() - downX, e.getRawY() - downY, e.getEventTime() - downT,
+                        getResources().getDisplayMetrics().density);
+                int next = current + dir;
+                if (dir != 0 && next >= 0 && next < pages.size()) {
+                    // отменить нажатие на кнопку/строку, с которой начался свайп
+                    android.view.MotionEvent c = android.view.MotionEvent.obtain(e);
+                    c.setAction(android.view.MotionEvent.ACTION_CANCEL);
+                    super.dispatchTouchEvent(c);
+                    c.recycle();
+                    switchTab(next);
+                    content.setTranslationX(dir * dp(48));
+                    content.setAlpha(0.2f);
+                    content.animate().translationX(0).alpha(1).setDuration(180).start();
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) { }
+        return super.dispatchTouchEvent(e);
+    }
+
+    int currentTab() { return current; }
+
     void switchTab(int idx) {
         if (idx != current) {
             final Page old = pages.get(current);
@@ -280,6 +331,11 @@ public class MainActivity extends Activity {
         }
         current = idx;
         for (int i = 0; i < tabButtons.size(); i++) styleTab(tabButtons.get(i), i == idx);
+        if (tabScroll != null && idx < tabButtons.size()) {
+            final View tb = tabButtons.get(idx);
+            tabScroll.post(() -> tabScroll.smoothScrollTo(
+                    Math.max(0, tb.getLeft() - (tabScroll.getWidth() - tb.getWidth()) / 2), 0));
+        }
         shownSignature = null;
         Section cached = cache.get(idx);
         if (cached != null) {

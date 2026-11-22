@@ -130,4 +130,26 @@ public class UiTest {
         assertFalse(MainActivity.stacked("Ядра CPU", "8"));
         assertTrue(MainActivity.stacked("Версия OpenGL", "OpenGL ES 3.2 v1.r49p1-03bet0.19498e0ae1d5dac223383c39a2e58f04"));
     }
+
+    @Test public void swipeDirection() {
+        float d = 2f;
+        assertEquals(1, MainActivity.swipeDir(-200, 20, 200, d));   // влево — следующая вкладка
+        assertEquals(-1, MainActivity.swipeDir(200, -30, 200, d));  // вправо — предыдущая
+        assertEquals(0, MainActivity.swipeDir(-100, 10, 200, d));   // коротко
+        assertEquals(0, MainActivity.swipeDir(-200, 150, 200, d));  // диагональ / прокрутка
+        assertEquals(0, MainActivity.swipeDir(-200, 0, 2000, d));   // слишком медленно
+    }
+
+    @Test public void swipeSwitchesTab() {
+        MainActivity a = org.robolectric.Robolectric.buildActivity(MainActivity.class).setup().get();
+        a.switchTab(1);
+        long t = android.os.SystemClock.uptimeMillis();
+        android.view.View root = a.getWindow().getDecorView();
+        float y = root.getHeight() * 0.7f, d = a.getResources().getDisplayMetrics().density;
+        android.view.MotionEvent down = android.view.MotionEvent.obtain(t, t, android.view.MotionEvent.ACTION_DOWN, 250 * d, y, 0);
+        android.view.MotionEvent up = android.view.MotionEvent.obtain(t, t + 150, android.view.MotionEvent.ACTION_UP, 50 * d, y + 5, 0);
+        a.dispatchTouchEvent(down);
+        a.dispatchTouchEvent(up);
+        assertEquals(2, a.currentTab());
+    }
 }
