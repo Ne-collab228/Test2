@@ -35,7 +35,15 @@ public class EnergyPage implements Page {
         double cap = pr != null ? pr.capacityMah : bp.designMah(ctx);
         String capSrc = pr != null ? "по точному замеру" : "по паспорту";
 
-        double offR = s.offRate(), onR = s.onRate();
+        // вместе с идущим сейчас отрезком (только пока служба работает — иначе он устарел)
+        long el = android.os.SystemClock.elapsedRealtime(), upt = android.os.SystemClock.uptimeMillis();
+        double lvlNow = Double.NaN;
+        double[] rNow = BatteryMeter.read(ctx);
+        if (rNow != null) lvlNow = rNow[0];
+        EnergyStats.Totals offT = on ? s.withOpen(false, el, upt, lvlNow) : s.off;
+        EnergyStats.Totals onT = on ? s.withOpen(true, el, upt, lvlNow) : s.on;
+        long offOpen = on ? s.openMs(false, el) : 0, onOpen = on ? s.openMs(true, el) : 0;
+        double offR = EnergyStats.offRate(offT), onR = EnergyStats.onRate(onT);
         int g = EnergyStats.offGrade(offR);
         out.header("Энергоэффективность", g == 0 ? null : GRADE[g], gradeColor(g));
         if (on) {
@@ -52,9 +60,10 @@ public class EnergyPage implements Page {
 
         // --- экран выключен ---
         out.header("Экран выключен (простой)", Double.isNaN(offR) ? null : Util.f("%.1f %%/ч", offR), gradeColor(g));
-        out.row("Накоплено", Util.duration(s.off.ms / 1000.0) + Util.f(" · ушло %.0f %%", s.off.pct));
+        out.row("Накоплено", Util.duration(offT.ms / 1000.0) + Util.f(" · ушло %.0f %%", offT.pct));
+        if (offOpen > 0) out.row("  сейчас", "экран выключен " + Util.duration(offOpen / 1000.0), Section.MUTED);
         if (Double.isNaN(offR)) {
-            out.row("Расход", Util.f("сбор данных (%.1f из 2 ч, нужно ≥ 2 %%)", s.off.ms / 3600_000.0), Section.MUTED);
+            out.row("Расход", Util.f("сбор данных (%.1f из 2 ч, нужно ≥ 2 %%)", offT.ms / 3600_000.0), Section.MUTED);
         } else {
             double ma = EnergyStats.ma(offR, cap);
             out.row("Расход", Util.f("%.2f %%/ч", offR) + (Double.isNaN(ma) ? "" : Util.f(" ≈ %.0f мА", ma)), gradeColor(g));
@@ -62,8 +71,8 @@ public class EnergyPage implements Page {
             double h = EnergyStats.hoursFull(offR);
             if (!Double.isNaN(h)) out.row("Хватит в простое", Util.f("≈ %.0f ч (%.1f сут)", h, h / 24));
         }
-        double sleep = 1 - s.off.awakeShare();
-        int sg = EnergyStats.sleepGrade(s.off.ms >= 30 * 60_000L ? sleep : Double.NaN);
+        double sleep = 1 - offT.awakeShare();
+        int sg = EnergyStats.sleepGrade(offT.ms >= 30 * 60_000L ? sleep : Double.NaN);
         if (sg > 0) {
             out.bar("Глубокий сон в простое", Util.f("%.0f %%", sleep * 100), sleep * 100, gradeColor(sg));
             out.row("Сон", SLEEP[sg], gradeColor(sg));
@@ -81,9 +90,10 @@ public class EnergyPage implements Page {
         // --- экран включён ---
         int og = onR <= 10 ? 1 : onR <= 16 ? 2 : onR <= 25 ? 3 : 4;
         out.header("Экран включён", Double.isNaN(onR) ? null : Util.f("%.0f %%/ч", onR), Section.NORMAL);
-        out.row("Накоплено", Util.duration(s.on.ms / 1000.0) + Util.f(" · ушло %.0f %%", s.on.pct));
+        out.row("Накоплено", Util.duration(onT.ms / 1000.0) + Util.f(" · ушло %.0f %%", onT.pct));
+        if (onOpen > 0) out.row("  сейчас", "экран включён " + Util.duration(onOpen / 1000.0), Section.MUTED);
         if (Double.isNaN(onR)) {
-            out.row("Расход", Util.f("сбор данных (%.0f из 30 мин, нужно ≥ 3 %%)", s.on.ms / 60_000.0), Section.MUTED);
+            out.row("Расход", Util.f("сбор данных (%.0f из 30 мин, нужно ≥ 3 %%)", onT.ms / 60_000.0), Section.MUTED);
         } else {
             double ma = EnergyStats.ma(onR, cap);
             out.row("Расход", Util.f("%.1f %%/ч", onR) + (Double.isNaN(ma) ? "" : Util.f(" ≈ %.0f мА", ma)), gradeColor(og));

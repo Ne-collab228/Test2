@@ -184,8 +184,15 @@ public class MainActivity extends Activity {
         setContentView(root);
         switchTab(0);
         prewarm();
-        ui.postDelayed(this::autoUploadIfUpdated, 6000);
+        // Авто-отчёт — через минуту: успевают набраться ток, графики и оценка времени, а нагрузка от
+        // запуска самого приложения уходит. Без токена вопрос о настройке — сразу (через 6 с).
+        boolean noToken = gh().getString("token", "").isEmpty();
+        ui.postDelayed(this::autoUploadIfUpdated, noToken ? 6000 : AUTO_UPLOAD_DELAY_MS);
+        if (!noToken && gh().getBoolean("auto_upload", true) && gh().getLong("uploaded_version", -1) != versionCode())
+            say("Отчёт о новой версии загрузится через минуту — собираю данные", 8000);
     }
+
+    static final long AUTO_UPLOAD_DELAY_MS = 60_000;
 
     static int iconFor(Page p) {
         if (p instanceof CpuPage) return R.drawable.ic_cpu;
@@ -1114,6 +1121,8 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        // слежение за расходом было включено, но служба не работает (обновление приложения, выгрузка MagicOS)
+        if (!EnergyService.running && EnergyService.enabled(this)) EnergyService.start(this);
         if (!OverlayService.running && getSharedPreferences(OverlayService.PREFS, MODE_PRIVATE).getBoolean("enabled", false)
                 && android.provider.Settings.canDrawOverlays(this)) startOverlay();
         ui.removeCallbacks(tick);

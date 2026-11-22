@@ -86,9 +86,38 @@ public final class EnergyStats {
     }
 
     /** %/ч, если данных достаточно, иначе NaN. */
-    double offRate() { return off.ms >= MIN_OFF_MS && off.pct >= MIN_OFF_PCT ? off.rate() : Double.NaN; }
+    double offRate() { return offRate(off); }
 
-    double onRate() { return on.ms >= MIN_ON_MS && on.pct >= MIN_ON_PCT ? on.rate() : Double.NaN; }
+    double onRate() { return onRate(on); }
+
+    static double offRate(Totals t) { return t.ms >= MIN_OFF_MS && t.pct >= MIN_OFF_PCT ? t.rate() : Double.NaN; }
+
+    static double onRate(Totals t) { return t.ms >= MIN_ON_MS && t.pct >= MIN_ON_PCT ? t.rate() : Double.NaN; }
+
+    /**
+     * Итоги вместе с идущим сейчас отрезком (до момента elapsed), состояние не меняется.
+     * Нужно, чтобы на экране было видно текущее время, а не только завершённые отрезки.
+     */
+    Totals withOpen(boolean screenOn, long elapsed, long uptime, double level) {
+        Totals src = screenOn ? on : off, t = new Totals();
+        t.ms = src.ms; t.pct = src.pct; t.awakeMs = src.awakeMs; t.segments = src.segments;
+        long dt = openMs(screenOn, elapsed);
+        if (dt > 0) {
+            Segment s = open;
+            double end = Double.isNaN(level) || level > s.startLevel ? s.minLevel : Math.min(level, s.minLevel);
+            t.ms += dt;
+            t.pct += Math.max(0, s.startLevel - end);
+            t.awakeMs += Math.max(0, Math.min(dt, uptime - s.startUptime));
+        }
+        return t;
+    }
+
+    /** Длительность идущего отрезка с таким состоянием экрана, мс (0 — такого отрезка нет). */
+    long openMs(boolean screenOn, long elapsed) {
+        Segment s = open;
+        if (s == null || s.screenOn != screenOn || (s.tainted && !screenOn) || elapsed <= s.startElapsed) return 0;
+        return elapsed - s.startElapsed;
+    }
 
     /** Оценка расхода в простое по %/ч: 1 отлично, 2 нормально, 3 повышенный, 4 что-то будит телефон. */
     static int offGrade(double ratePctH) {

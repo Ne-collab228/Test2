@@ -176,10 +176,11 @@ public class EnergyService extends Service {
         super.onDestroy();
     }
 
-    /** Перезапуск после перезагрузки телефона, если слежение было включено. */
+    /** Перезапуск после перезагрузки телефона и после обновления приложения, если слежение было включено. */
     public static class Boot extends BroadcastReceiver {
         @Override public void onReceive(Context c, Intent i) {
-            if (Intent.ACTION_BOOT_COMPLETED.equals(i.getAction()) && enabled(c)) {
+            String a = i.getAction();
+            if ((Intent.ACTION_BOOT_COMPLETED.equals(a) || Intent.ACTION_MY_PACKAGE_REPLACED.equals(a)) && enabled(c)) {
                 try { c.startForegroundService(new Intent(c, EnergyService.class)); } catch (Throwable ignored) { }
             }
         }

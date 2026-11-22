@@ -103,4 +103,17 @@ public class EnergyTest {
         assertTrue(BatteryPage.chargeText(95, Double.NaN, 5300).contains("5035"));
         assertEquals(12, EnergyPage.processNm("MT6769V/CB mt6768"));
     }
+
+    /** Идущий отрезок виден сразу, но в итоги записывается только при закрытии. */
+    @Test public void openSegmentShownLive() {
+        EnergyStats e = new EnergyStats();
+        e.event(0, 0, 1, 80, true, false, false);                       // экран включён
+        EnergyStats.Totals t = e.withOpen(true, 40 * 60_000L, 40 * 60_000L, 76);
+        assertEquals(40 * 60_000L, t.ms);
+        assertEquals(4, t.pct, 1e-9);
+        assertEquals(6, EnergyStats.onRate(t), 1e-9);
+        assertEquals(0, e.on.ms);                                         // сохранённые итоги не тронуты
+        assertEquals(0, e.withOpen(false, 40 * 60_000L, 0, 76).ms);      // другой режим экрана — без него
+        assertEquals(40 * 60_000L, e.openMs(true, 40 * 60_000L));
+    }
 }
