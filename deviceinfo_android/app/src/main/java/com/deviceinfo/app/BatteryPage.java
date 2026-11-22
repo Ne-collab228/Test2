@@ -196,11 +196,52 @@ public class BatteryPage implements Page {
         out.chart("Уровень заряда", Util.f("%.0f %%", sm[3]), ChargeLog.series(1), 0, 100, "%", Section.OK);
         out.row("Пиковая мощность", Util.f("%.1f Вт", sm[0]), Section.INFO);
         out.row("Средняя мощность", Util.f("%.1f Вт", sm[1]));
-        String vd = ChargeLog.verdict(sm[0]);
-        if (vd != null) out.row("Вывод", vd, sm[0] >= 24 ? Section.OK : (sm[0] >= 14 ? Section.NORMAL : Section.WARN));
-        out.note("Мощность измеряется у батареи (напряжение × ток); на блоке она на 10–15 % выше. MagicOS сама снижает "
-                + "мощность после ~80 %, при нагреве и при «умной» зарядке ночью — это нормально."
+        double vW = sm[0];
+        if (chargingNow) {
+            double[] in = inputPower(ctx);
+            if (in != null) {
+                out.row("От зарядки сейчас", Util.f("≈ %.1f Вт (в батарею %.1f Вт + телефон ≈ %.1f Вт)", in[0], in[1], in[2]), Section.INFO);
+                vW = Math.max(vW, in[0]);
+            }
+        }
+        String vd = ChargeLog.verdict(vW);
+        if (vd != null) out.row("Вывод", vd, vW >= 24 ? Section.OK : (vW >= 14 ? Section.NORMAL : Section.WARN));
+        out.note("Мощность на графике — та, что дошла до батареи (напряжение × ток). Пока экран включён, часть мощности "
+                + "от зарядки сразу тратит сам телефон — это учтено в строке «От зарядки сейчас». На блоке ещё на 10–15 % "
+                + "больше (потери). MagicOS сама снижает мощность под конец зарядки, при нагреве и при «умной» зарядке ночью — это нормально."
                 + (spec(Build.MODEL) != null && spec(Build.MODEL).contains("35 Вт") ? " Паспорт модели: 35 Вт." : ""));
+    }
+
+    /** Сколько тратит сам телефон, мА: экран выключен — ~40 мА; включён — расход до зарядки или по статистике. */
+    static double phoneDrainMa(Context ctx, boolean screenOn, double capMah) {
+        if (!screenOn) return 40;
+        double d = Remaining.lastDrainMa;
+        if (!Double.isNaN(d) && d > 50 && d < 4000) return d;
+        EnergyStats st = EnergyService.stats;
+        if (st != null && capMah > 0) {
+            double on = EnergyStats.ma(st.onRate(), capMah);
+            if (!Double.isNaN(on)) return on;
+        }
+        return 500; // типичный расход с включённым экраном
+    }
+
+    /** Мощность от зарядки сейчас: {всего Вт, в батарею Вт, телефон Вт} или null. */
+    static double[] inputPower(Context ctx) {
+        try {
+            android.content.Intent b = ctx.registerReceiver(null, new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED));
+            double[] r = BatteryMeter.read(ctx);
+            if (b == null || r == null || Double.isNaN(r[3])) return null;
+            int mv = b.getIntExtra("voltage", -1);
+            double v = mv > 0 ? (mv > 100 ? mv / 1000.0 : mv) : Double.NaN;
+            double ma = r[3] * BatteryMeter.sign();
+            if (Double.isNaN(v) || ma <= 0) return null;
+            double chargeMa = Remaining.chargeMa();
+            double battW = v * (Double.isNaN(chargeMa) ? ma : chargeMa) / 1000.0;
+            boolean screen = ((android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE)).isInteractive();
+            PreciseMeter.Result pr = PreciseMeter.last(ctx);
+            double phoneW = v * phoneDrainMa(ctx, screen, pr != null ? pr.capacityMah : 0) / 1000.0;
+            return new double[]{battW + phoneW, battW, phoneW};
+        } catch (Throwable e) { return null; }
     }
 
     /**
@@ -463,7 +504,10 @@ public class BatteryPage implements Page {
             double cr = BatteryHistory.chargeRate(history.samples, now);
             if (Double.isNaN(cr) && history.open != null)
                 cr = sessionChargeRate(history.open.start, history.open.from, now, lvl);
-            if (Double.isNaN(cr)) out.row("Скорость зарядки", "сбор данных…", Section.MUTED);
+            double cma = Remaining.chargeMa();
+            if (!Double.isNaN(cma) && capMah > 0)       // по току точнее, чем по целым процентам
+                out.row("Скорость зарядки", Util.f("≈ %.0f %%/ч (по току)", cma / capMah * 100));
+            else if (Double.isNaN(cr)) out.row("Скорость зарядки", "сбор данных…", Section.MUTED);
             else out.row("Скорость зарядки", Util.f("≈ %.0f %%/ч", cr));
         }
         if (valid(energy) && energy > 0) out.row("Энергия", Util.f("%.2f Вт·ч", energy / 1e9));
@@ -587,8 +631,9 @@ public class BatteryPage implements Page {
         String gather = "Сбор данных… (нужно ≥ 15 мин и ≥ 2 %)";
         if (chargingNow) {
             out.note("«Зарядится примерно через» (вверху): первая оценка — через 30 с по току зарядки, дальше она "
-                    + "уточняется по среднему за 10 минут. Учтено, что после 80 % телефон снижает ток и последние "
-                    + "проценты идут медленнее. Если включена умная зарядка, телефон может сам задержаться на 80 %.");
+                    + "уточняется по среднему за 10 минут. Учтено, что под конец телефон снижает ток: при быстрой "
+                    + "зарядке — примерно с 80 %, при медленной — ближе к 90 % и слабее. Если включена умная зарядка, "
+                    + "телефон может сам задержаться на 80 %.");
             if (est[0] == 2) out.row("До полной (по росту процентов)", Util.duration(est[1]), Section.INFO);
         } else {
             out.note("«Хватит примерно на» (вверху): первая оценка — через 30 с, дальше она уточняется по среднему "

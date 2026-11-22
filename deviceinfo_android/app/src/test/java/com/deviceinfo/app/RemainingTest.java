@@ -55,15 +55,34 @@ public class RemainingTest {
         assertNull(Remaining.fmt(Double.NaN));
     }
 
-    /** До 80 % — постоянный ток, после — медленнее. */
+    /** Быстрая зарядка: снижение тока с 80 %; медленная: с ~92 % и слабее. */
     @Test public void chargeModel() {
-        // 5000 мА·ч, 30 %, 2500 мА: 30→80 % = 2500 мА·ч / 2500 = 1 ч; 80→100 % = 1000 / (2500·0.45) ≈ 0.89 ч
-        assertEquals(1 + 1000 / (2500 * 0.45), Remaining.hoursToFullFor(5000, 30, 2500), 1e-9);
-        // 90 %, ток уже снижен до 1000 мА: 500 мА·ч / 500 = 1 ч
-        assertEquals(1.0, Remaining.hoursToFullFor(5000, 90, 1000), 1e-9);
+        // быстрая: 5000 мА·ч, 30 %, 5000 мА (1C): 30→80 % = 0.5 ч; 80→100 % = 1000 / (5000·0.45)
+        assertEquals(80, Remaining.taperLevel(5000, 5000), 1e-9);
+        assertEquals(0.5 + 1000 / (5000 * 0.45), Remaining.hoursToFullFor(5000, 30, 5000), 1e-9);
+        // медленная (как повербанк): 4692 мА·ч, 25 %, 844 мА → снижение с 92 %, итого ≈ 4.4 ч
+        assertEquals(92, Remaining.taperLevel(4692, 844), 1e-9);
+        double h = Remaining.hoursToFullFor(4692, 25, 844);
+        assertEquals(4692 * 0.67 / 844 + 4692 * 0.08 / (844 * 0.65), h, 1e-9);
+        assertTrue(h > 4.2 && h < 4.6);
+        // уже выше уровня снижения: ток уже сниженный
+        assertEquals(250 / (1000 * 0.7), Remaining.hoursToFullFor(5000, 95, 1000), 1e-9);
         assertEquals(0, Remaining.hoursToFullFor(5000, 100, 1000), 0);
         assertTrue(Double.isNaN(Remaining.hoursToFullFor(5000, 50, Double.NaN)));
         assertEquals("заряжен полностью", Remaining.chargeText(0));
+    }
+
+    /** Расход до зарядки запоминается — по нему оценивается, сколько телефон тратит во время зарядки. */
+    @Test public void lastDrainKept() {
+        Remaining.lastDrainMa = Double.NaN;
+        Remaining.DRAIN.reset();
+        Remaining.smooth(600, 1000);
+        Remaining.reset();
+        assertEquals(600, Remaining.lastDrainMa, 1e-9);
+        Remaining.reset();                           // повторный сброс (зарядка идёт) не затирает
+        assertEquals(600, Remaining.lastDrainMa, 1e-9);
+        assertEquals(40, BatteryPage.phoneDrainMa(null, false, 0), 0);
+        assertEquals(600, BatteryPage.phoneDrainMa(null, true, 0), 0);
     }
 
     /** Оценка зарядки берёт только точки зарядки (+), разрядные (−) в окне не мешают. */
@@ -75,9 +94,9 @@ public class RemainingTest {
         assertTrue(Double.isNaN(Remaining.hoursToFull(5000, 30, t + 60_000L, 60_000L)));
         for (int i = 6; i < 10; i++) BatteryMeter.recordCurrent(t + i * 10_000L, 2500);  // 40 с зарядки
         double h = Remaining.hoursToFull(5000, 30, t + 100_000L, 100_000L);
-        assertEquals(1 + 1000 / (2500 * 0.45), h, 1e-6);
+        assertEquals(Remaining.hoursToFullFor(5000, 30, 2500), h, 1e-6);
         String txt = Remaining.chargeText(h);
-        assertTrue(txt, txt.startsWith("≈ 1 ч 50 мин (ток зарядки ≈ 2500 мА, уточняется)"));
+        assertTrue(txt, txt.startsWith("≈ 1 ч 40 мин (ток зарядки ≈ 2500 мА, уточняется)"));
         // оценка разряда отдельно и не затронута
         assertTrue(Double.isNaN(Remaining.drainMa()) || Remaining.drainMa() > 0);
     }

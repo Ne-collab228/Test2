@@ -16,16 +16,31 @@ import java.util.List;
  *  4) сглаживание во времени (постоянная ~3 мин) и показ с округлением; число на экране меняется,
  *     только если новая оценка отличается больше чем на 10 %.
  *
- * Для зарядки учитывается, что после ~80 % телефон снижает ток (дозаряд постоянным напряжением):
- * последние 20 % идут медленнее.
+ * Для зарядки учитывается, что под конец телефон снижает ток (дозаряд постоянным напряжением):
+ * при быстрой зарядке — с ~80 %, при медленной — с ~92 % и слабее.
  */
 public final class Remaining {
     static final long WINDOW_MS = 10 * 60_000L, TAU_MS = 3 * 60_000L;
     /** Первая оценка — через 30 с (3 корзины по 10 с); полное окно — 10 мин (60 корзин). */
     static final int MIN_POINTS = 3, FULL_POINTS = 60;
     static final double MAX_MA = 8000, MIN_MA = 5, HYST = 0.10;
-    /** Уровень, после которого ток зарядки снижается, и средний ток дозаряда относительно тока до него. */
-    static final double TAPER_LEVEL = 80, TAPER_K = 0.45;
+    /**
+     * Дозаряд: при быстрой зарядке (ток ≥ 0.8 ёмкости в час) ток начинает снижаться с ~80 %, в среднем
+     * до 0.45 от прежнего; при медленной (≤ 0.2 ёмкости в час) батарея доходит до предела напряжения
+     * только к ~92 %, и ток снижается меньше (0.65). Между ними — плавно.
+     */
+    static final double FAST_C = 0.8, SLOW_C = 0.2;
+
+    /** 0 — медленная зарядка, 1 — быстрая (по току относительно ёмкости). */
+    static double fastness(double capMah, double ma) {
+        double c = ma / capMah;
+        return Math.max(0, Math.min(1, (c - SLOW_C) / (FAST_C - SLOW_C)));
+    }
+
+    static double taperLevel(double capMah, double ma) { return 92 - 12 * fastness(capMah, ma); }
+
+    /** Последний устойчивый расход перед зарядкой (мА) — для оценки, сколько тратит сам телефон. */
+    static volatile double lastDrainMa = Double.NaN;
 
     /** Состояние одной оценки (разряд или зарядка). */
     static final class Est {
@@ -105,21 +120,18 @@ public final class Remaining {
     }
 
     /**
-     * Часы до 100 % при токе зарядки ma (мА) на уровне levelPct. До 80 % — ток постоянный,
-     * дальше в среднем TAPER_K от тока до снижения. Если уровень уже выше 80 %, измеренный ток —
-     * это уже сниженный ток, и до конца он в среднем ещё вдвое ниже.
+     * Часы до 100 % при токе зарядки ma (мА) на уровне levelPct. До уровня снижения тока
+     * (80–92 %, см. taperLevel) ток постоянный, дальше в среднем меньше. Если уровень уже выше,
+     * измеренный ток — это уже сниженный ток.
      */
     static double hoursToFullFor(double capMah, double levelPct, double ma) {
         if (capMah <= 0 || Double.isNaN(levelPct) || Double.isNaN(ma) || ma < MIN_MA) return Double.NaN;
         if (levelPct >= 100) return 0;
-        double h = 0;
-        if (levelPct < TAPER_LEVEL) {
-            h += capMah * (TAPER_LEVEL - levelPct) / 100.0 / ma;
-            h += capMah * (100 - TAPER_LEVEL) / 100.0 / (ma * TAPER_K);
-        } else {
-            h += capMah * (100 - levelPct) / 100.0 / (ma * 0.5);
-        }
-        return h;
+        double f = fastness(capMah, ma), start = taperLevel(capMah, ma);
+        double kTaper = 0.65 - 0.2 * f, kAfter = 0.7 - 0.2 * f;
+        if (levelPct < start)
+            return capMah * (start - levelPct) / 100.0 / ma + capMah * (100 - start) / 100.0 / (ma * kTaper);
+        return capMah * (100 - levelPct) / 100.0 / (ma * kAfter);
     }
 
     /** Итог: часы до полной зарядки (сглаженные, устойчивые) или NaN, пока мало данных; 0 — заряжен. */
@@ -156,7 +168,10 @@ public final class Remaining {
     }
 
     /** Сбросить оценку разряда (началась зарядка) / тесты. */
-    static void reset() { DRAIN.reset(); }
+    static void reset() {
+        synchronized (DRAIN) { if (!Double.isNaN(DRAIN.ema)) lastDrainMa = DRAIN.ema; }
+        DRAIN.reset();
+    }
 
     /** Сбросить оценку зарядки (зарядку отключили). */
     static void resetCharge() { CHARGE.reset(); }

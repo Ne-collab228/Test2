@@ -150,7 +150,9 @@ public class EnergyPage implements Page {
                 out.row("Зарядится примерно через", full != null ? full : "считаю… (≈ 30 с)",
                         full != null ? Section.OK : Section.MUTED);
             }
-            if (BgSampler.foreground)
+            if (r != null && r[2] != 0)
+                out.note("Идёт зарядка: «+» — ток, который доходит до батареи (то, что тратит сам телефон, уже вычтено).");
+            else if (BgSampler.foreground)
                 out.note("Сейчас приложение открыто и экран включён — это расход «в работе», не в простое.");
             else out.note("Снято в фоне: это расход при текущем использовании телефона, не в простое.");
         } else out.row("Ток", null);
