@@ -28,8 +28,15 @@ public class SensorsPage implements Page {
         SensorManager sm = (SensorManager) ctx.getSystemService(Context.SENSOR_SERVICE);
         List<Sensor> list = sm.getSensorList(Sensor.TYPE_ALL);
         if (list.isEmpty()) { out.header("Датчики (0)"); out.note("Датчики не найдены."); return; }
-        SensorLive.ensureRegistered(sm, list);
-        buildLive(ctx, out, list);
+        if (SensorLive.allowed) {
+            SensorLive.ensureRegistered(sm, list);
+            buildLive(ctx, out, list);
+        } else {
+            SensorLive.stop();
+            out.header("Показания (в реальном времени)");
+            out.note("Показания датчиков снимаются, только пока эта вкладка открыта на экране. В фоне датчики "
+                    + "не включаются, чтобы не будить телефон и не тратить батарею.");
+        }
         out.header("Датчики (" + list.size() + ")");
 
         Map<String, Integer> counts = new TreeMap<>();

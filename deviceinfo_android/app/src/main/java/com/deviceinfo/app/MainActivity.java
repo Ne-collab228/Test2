@@ -352,6 +352,7 @@ public class MainActivity extends Activity {
             worker.execute(() -> { try { synchronized (old) { old.onHide(app); } } catch (Throwable ignored) { } });
         }
         current = idx;
+        SensorLive.allowed = resumed && pages.get(idx) instanceof SensorsPage;
         for (int i = 0; i < tabButtons.size(); i++) styleTab(tabButtons.get(i), i == idx);
         if (tabScroll != null && idx < tabButtons.size()) {
             final View tb = tabButtons.get(idx);
@@ -983,12 +984,6 @@ public class MainActivity extends Activity {
         for (int i = 0; i < pages.size(); i++) {
             Page p = pages.get(i);
             Section s = buildSafe(p, app);
-            if (p instanceof SensorsPage) {
-                // датчики начинают присылать данные после регистрации — даём им 2 с
-                try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
-                s = buildSafe(p, app);
-                if (i != current) { try { synchronized (p) { p.onHide(app); } } catch (Throwable ignored) { } }
-            }
             sb.append("\n===== ").append(p.title()).append(" =====\n").append(s.toText());
         }
         return sb.toString();
@@ -1140,6 +1135,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        SensorLive.allowed = pages.get(current) instanceof SensorsPage;
         BgSampler.foreground = true;
         fgSince = android.os.SystemClock.elapsedRealtime();
         ui.removeCallbacks(bgTick);
@@ -1154,6 +1150,8 @@ public class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         resumed = false;
+        SensorLive.allowed = false;
+        worker.execute(SensorLive::stop); // датчики не должны работать в фоне ни при какой вкладке
         BgSampler.foreground = false;
         fgMs += android.os.SystemClock.elapsedRealtime() - fgSince;
         ui.removeCallbacks(tick);

@@ -49,6 +49,12 @@ final class SensorLive {
 
     static long startedMs() { return startedMs; }
 
+    /**
+     * Можно ли слушать датчики: только пока вкладка «Датчики» открыта на экране (выставляет MainActivity).
+     * В фоне, при подготовке вкладок и при сборке отчёта датчики не включаются — они могут будить телефон.
+     */
+    static volatile boolean allowed;
+
     private static final SensorEventListener LISTENER = new SensorEventListener() {
         @Override public void onSensorChanged(SensorEvent e) {
             String k = key(e.sensor);
@@ -95,6 +101,9 @@ final class SensorLive {
             startedMs = SystemClock.elapsedRealtime();
         } catch (Throwable ignored) { }
     }
+
+    /** Слушаем ли сейчас датчики. */
+    static synchronized boolean active() { return thread != null; }
 
     static synchronized void stop() {
         if (thread == null) return;

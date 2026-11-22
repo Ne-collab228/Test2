@@ -117,8 +117,11 @@ public class EnergyService extends Service {
             if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) screen = false;
             if (Intent.ACTION_SCREEN_ON.equals(i.getAction())) screen = true;
             boolean busy = BatteryWearService.running && BatteryWearService.precise;
+            boolean audio = false;
+            try { audio = ((android.media.AudioManager) getSystemService(AUDIO_SERVICE)).isMusicActive(); }
+            catch (Throwable ignored) { }
             s.event(SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(), System.currentTimeMillis(),
-                    lvl, screen, plugged, busy);
+                    lvl, screen, plugged, busy, audio);
             s.save(this);
             // тест зарядки в фоне
             double[] r = BatteryMeter.read(this);

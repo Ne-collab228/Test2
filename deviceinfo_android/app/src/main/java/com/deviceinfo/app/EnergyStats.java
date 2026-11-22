@@ -22,6 +22,10 @@ public final class EnergyStats {
     static final double MIN_OFF_PCT = 2, MIN_ON_PCT = 3;
     /** Долгий отрезок простоя («ночь») — от 3 ч. */
     static final long NIGHT_MS = 3 * 3600_000L;
+    /** Длинный отрезок простоя для оценки сна — от 10 мин (короткие не показательны: процессор не засыпает сразу). */
+    static final long LONG_MS = 10 * 60_000L;
+    /** Минимум накопленных длинных отрезков для оценки сна. */
+    static final long MIN_LONG_MS = 30 * 60_000L;
 
     /** Итоги по одному состоянию экрана. */
     static final class Totals {
@@ -34,9 +38,15 @@ public final class EnergyStats {
     static final class Segment {
         boolean screenOn; long startElapsed, startUptime, startWall; double startLevel; boolean tainted;
         double minLevel;
+        /** Во время отрезка играл звук (учитывается только для экрана выключенного). */
+        boolean audio;
     }
 
     final Totals off = new Totals(), on = new Totals();
+    /** Экран выключен, но играл звук: в «off» не входит. */
+    final Totals offAudio = new Totals();
+    /** Длинные (от LONG_MS) отрезки простоя без звука и замеров: длительность и время бодрствования. */
+    long longOffMs, longOffAwakeMs;
     Segment open;
     /** Последний долгий простой: {начало (wall), длительность мс, ушло %, доля бодрствования}. */
     double[] lastNight;
@@ -48,8 +58,14 @@ public final class EnergyStats {
      * состояние сменилось, и открывает новый.
      */
     void event(long elapsed, long uptime, long wall, double level, boolean screenOn, boolean plugged, boolean busy) {
+        event(elapsed, uptime, wall, level, screenOn, plugged, busy, false);
+    }
+
+    /** То же, audio — сейчас играет звук (экран выключен + звук = отдельные итоги offAudio). */
+    void event(long elapsed, long uptime, long wall, double level, boolean screenOn, boolean plugged, boolean busy, boolean audio) {
         if (since == 0) since = wall;
         if (open != null) {
+            if (audio) open.audio = true;
             if (busy && !open.screenOn) open.tainted = true;
             if (!Double.isNaN(level)) open.minLevel = Math.min(open.minLevel, level);
             if (plugged || open.screenOn != screenOn || elapsed < open.startElapsed || level > open.startLevel + 0.5) {
@@ -59,7 +75,7 @@ public final class EnergyStats {
         if (open == null && !plugged && !Double.isNaN(level)) {
             Segment s = new Segment();
             s.screenOn = screenOn; s.startElapsed = elapsed; s.startUptime = uptime; s.startWall = wall;
-            s.startLevel = level; s.minLevel = level; s.tainted = busy && !screenOn;
+            s.startLevel = level; s.minLevel = level; s.tainted = busy && !screenOn; s.audio = audio;
             open = s;
         }
     }
@@ -76,13 +92,23 @@ public final class EnergyStats {
         long awake = Math.max(0, Math.min(dt, uptime - s.startUptime));
         if (s.screenOn) add(on, dt, used, awake);
         else if (!s.tainted) {
-            add(off, dt, used, awake);
-            if (dt >= NIGHT_MS) lastNight = new double[]{s.startWall, dt, used, awake / (double) dt};
+            if (s.audio) add(offAudio, dt, used, awake);
+            else {
+                add(off, dt, used, awake);
+                if (dt >= NIGHT_MS) lastNight = new double[]{s.startWall, dt, used, awake / (double) dt};
+                if (dt >= LONG_MS) { longOffMs += dt; longOffAwakeMs += awake; }
+            }
         }
     }
 
     private static void add(Totals t, long dt, double used, long awake) {
         t.ms += dt; t.pct += used; t.awakeMs += awake; t.segments++;
+    }
+
+    /** Доля глубокого сна на длинных отрезках простоя без звука; NaN, если накоплено меньше 30 мин. */
+    double longSleepShare() {
+        if (longOffMs < MIN_LONG_MS) return Double.NaN;
+        return Math.min(1, Math.max(0, 1 - longOffAwakeMs / (double) longOffMs));
     }
 
     /** %/ч, если данных достаточно, иначе NaN. */
@@ -100,6 +126,7 @@ public final class EnergyStats {
      */
     Totals withOpen(boolean screenOn, long elapsed, long uptime, double level) {
         Totals src = screenOn ? on : off, t = new Totals();
+        // (отрезок со звуком в «off» не входит — см. openAudioMs)
         t.ms = src.ms; t.pct = src.pct; t.awakeMs = src.awakeMs; t.segments = src.segments;
         long dt = openMs(screenOn, elapsed);
         if (dt > 0) {
@@ -115,7 +142,14 @@ public final class EnergyStats {
     /** Длительность идущего отрезка с таким состоянием экрана, мс (0 — такого отрезка нет). */
     long openMs(boolean screenOn, long elapsed) {
         Segment s = open;
-        if (s == null || s.screenOn != screenOn || (s.tainted && !screenOn) || elapsed <= s.startElapsed) return 0;
+        if (s == null || s.screenOn != screenOn || (s.tainted && !screenOn) || (s.audio && !screenOn) || elapsed <= s.startElapsed) return 0;
+        return elapsed - s.startElapsed;
+    }
+
+    /** Длительность идущего отрезка «экран выключен + звук», мс (0 — такого нет). */
+    long openAudioMs(long elapsed) {
+        Segment s = open;
+        if (s == null || s.screenOn || s.tainted || !s.audio || elapsed <= s.startElapsed) return 0;
         return elapsed - s.startElapsed;
     }
 
@@ -131,10 +165,10 @@ public final class EnergyStats {
     /** Оценка глубокого сна в простое: доля времени, когда процессор спал. */
     static int sleepGrade(double sleepShare) {
         if (Double.isNaN(sleepShare)) return 0;
-        if (sleepShare >= 0.9) return 1;
-        if (sleepShare >= 0.75) return 2;
-        if (sleepShare >= 0.5) return 3;
-        return 4;
+        if (sleepShare >= 0.85) return 1;
+        if (sleepShare >= 0.65) return 2;
+        if (sleepShare >= 0.3) return 3;   // «часто просыпается»
+        return 4;                          // «почти не спит»
     }
 
     /** Ток, мА, по %/ч и ёмкости. */
@@ -153,7 +187,8 @@ public final class EnergyStats {
         try {
             SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             e.since = p.getLong("since", 0);
-            read(p, "off", e.off); read(p, "on", e.on);
+            read(p, "off", e.off); read(p, "on", e.on); read(p, "offa", e.offAudio);
+            e.longOffMs = p.getLong("long_ms", 0); e.longOffAwakeMs = p.getLong("long_awake", 0);
             if (p.contains("night_t"))
                 e.lastNight = new double[]{p.getLong("night_t", 0), p.getLong("night_ms", 0),
                         p.getFloat("night_pct", 0), p.getFloat("night_awake", 0)};
@@ -163,6 +198,7 @@ public final class EnergyStats {
                 s.startElapsed = p.getLong("seg_el", 0); s.startUptime = p.getLong("seg_up", 0);
                 s.startWall = p.getLong("seg_wall", 0); s.startLevel = p.getFloat("seg_lvl", 0);
                 s.minLevel = p.getFloat("seg_min", (float) s.startLevel); s.tainted = p.getBoolean("seg_busy", false);
+                s.audio = p.getBoolean("seg_audio", false);
                 e.open = s;
             }
         } catch (Throwable ignored) { }
@@ -178,15 +214,16 @@ public final class EnergyStats {
         try {
             SharedPreferences.Editor ed = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
             ed.putLong("since", since);
-            write(ed, "off", off); write(ed, "on", on);
+            write(ed, "off", off); write(ed, "on", on); write(ed, "offa", offAudio);
+            ed.putLong("long_ms", longOffMs).putLong("long_awake", longOffAwakeMs);
             if (lastNight != null) ed.putLong("night_t", (long) lastNight[0]).putLong("night_ms", (long) lastNight[1])
                     .putFloat("night_pct", (float) lastNight[2]).putFloat("night_awake", (float) lastNight[3]);
             if (open != null) ed.putBoolean("seg_on", open.screenOn).putLong("seg_el", open.startElapsed)
                     .putLong("seg_up", open.startUptime).putLong("seg_wall", open.startWall)
                     .putFloat("seg_lvl", (float) open.startLevel).putFloat("seg_min", (float) open.minLevel)
-                    .putBoolean("seg_busy", open.tainted);
+                    .putBoolean("seg_busy", open.tainted).putBoolean("seg_audio", open.audio);
             else ed.remove("seg_on").remove("seg_el").remove("seg_up").remove("seg_wall").remove("seg_lvl")
-                    .remove("seg_min").remove("seg_busy");
+                    .remove("seg_min").remove("seg_busy").remove("seg_audio");
             ed.apply();
         } catch (Throwable ignored) { }
     }

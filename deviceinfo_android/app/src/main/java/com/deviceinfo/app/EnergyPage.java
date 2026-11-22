@@ -71,12 +71,17 @@ public class EnergyPage implements Page {
             double h = EnergyStats.hoursFull(offR);
             if (!Double.isNaN(h)) out.row("Хватит в простое", Util.f("≈ %.0f ч (%.1f сут)", h, h / 24));
         }
-        double sleep = 1 - offT.awakeShare();
-        int sg = EnergyStats.sleepGrade(offT.ms >= 30 * 60_000L ? sleep : Double.NaN);
+        // сон — только по отрезкам простоя от 10 мин без музыки (на коротких процессор не успевает уснуть)
+        long longMs = s.longOffMs, longAwake = s.longOffAwakeMs;
+        if (offOpen >= EnergyStats.LONG_MS) { longMs += offOpen; longAwake += Math.max(0, offT.awakeMs - s.off.awakeMs); }
+        double sleep = longMs < EnergyStats.MIN_LONG_MS ? Double.NaN : Math.min(1, Math.max(0, 1 - longAwake / (double) longMs));
+        int sg = EnergyStats.sleepGrade(sleep);
         if (sg > 0) {
             out.bar("Глубокий сон в простое", Util.f("%.0f %%", sleep * 100), sleep * 100, gradeColor(sg));
             out.row("Сон", SLEEP[sg], gradeColor(sg));
-        } else out.row("Глубокий сон в простое", "сбор данных (нужно ≥ 30 мин)", Section.MUTED);
+        } else out.row("Глубокий сон в простое", Util.f("сбор данных (%.0f из 30 мин)", longMs / 60_000.0), Section.MUTED);
+        out.note("Сон считается только по промежуткам простоя от 10 минут без музыки — сразу после выключения экрана "
+                + "телефон ещё несколько минут досинхронизирует данные, это нормально.");
         if (s.lastNight != null) {
             double[] n = s.lastNight;
             double rate = n[2] / (n[1] / 3600_000.0);
@@ -85,7 +90,23 @@ public class EnergyPage implements Page {
                     + Util.f(" · −%.0f %% (%.1f %%/ч) · сон %.0f %%", n[2], rate, 100 * (1 - n[3])));
         }
         out.note("Норма для простоя: до ~1 %/ч (телефон почти всё время в глубоком сне). Если расход выше 3 %/ч или "
-                + "сон ниже 50 % — какое-то приложение будит телефон: проверьте Настройки → Батарея → Потребление.");
+                + "сон ниже 30 % — какое-то приложение будит телефон: проверьте Настройки → Батарея → Потребление.");
+
+        // --- экран выключен, играла музыка ---
+        EnergyStats.Totals au = s.offAudio;
+        long auOpen = on ? s.openAudioMs(el) : 0;
+        if (au.ms > 0 || auOpen > 0) {
+            double auR = au.ms >= 30 * 60_000L && au.pct >= 2 ? au.rate() : Double.NaN;
+            out.header("Экран выключен, играла музыка", Double.isNaN(auR) ? null : Util.f("%.1f %%/ч", auR), Section.NORMAL);
+            out.row("Накоплено", Util.duration(au.ms / 1000.0) + Util.f(" · ушло %.0f %%", au.pct));
+            if (auOpen > 0) out.row("  сейчас", "играет музыка " + Util.duration(auOpen / 1000.0), Section.MUTED);
+            if (!Double.isNaN(auR)) {
+                double ma = EnergyStats.ma(auR, cap);
+                out.row("Расход", Util.f("%.1f %%/ч", auR) + (Double.isNaN(ma) ? "" : Util.f(" ≈ %.0f мА", ma)));
+            }
+            out.note("Музыка (в том числе по Bluetooth) не даёт телефону уснуть, поэтому это время в простой не входит "
+                    + "и на оценку не влияет.");
+        }
 
         // --- экран включён ---
         int og = onR <= 10 ? 1 : onR <= 16 ? 2 : onR <= 25 ? 3 : 4;
@@ -117,7 +138,9 @@ public class EnergyPage implements Page {
                 out.row("Хватит при таком использовании", left != null ? left : "считаю… (≈ 30 с)",
                         left != null ? Section.INFO : Section.MUTED);
             }
-            out.note("Сейчас приложение открыто и экран включён — это расход «в работе», не в простое.");
+            if (BgSampler.foreground)
+                out.note("Сейчас приложение открыто и экран включён — это расход «в работе», не в простое.");
+            else out.note("Снято в фоне: это расход при текущем использовании телефона, не в простое.");
         } else out.row("Ток", null);
         out.row("Ёмкость для расчёта", cap > 0 ? Util.f("%.0f мА·ч (%s)", cap, capSrc) : null,
                 pr != null ? Section.NORMAL : Section.MUTED);
