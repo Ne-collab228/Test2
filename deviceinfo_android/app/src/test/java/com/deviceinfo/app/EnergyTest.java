@@ -116,4 +116,18 @@ public class EnergyTest {
         assertEquals(0, e.withOpen(false, 40 * 60_000L, 0, 76).ms);      // другой режим экрана — без него
         assertEquals(40 * 60_000L, e.openMs(true, 40 * 60_000L));
     }
+
+    /** Фоновый замер пишет ток батареи (для «Хватит примерно на»), только когда приложение свёрнуто. */
+    @Test public void backgroundSamplerRecordsCurrent() {
+        Context ctx = RuntimeEnvironment.getApplication();
+        BatteryMeter.reset();
+        ctx.sendStickyBroadcast(new Intent(Intent.ACTION_BATTERY_CHANGED).putExtra("level", 60).putExtra("scale", 100)
+                .putExtra("status", 3).putExtra("plugged", 0).putExtra("voltage", 3900));
+        BgSampler.foreground = true;
+        assertFalse(BgSampler.wanted(ctx));
+        BgSampler.foreground = false;
+        assertTrue(BgSampler.wanted(ctx));
+        BgSampler.tick(ctx);   // не падает без реальных датчиков
+        BgSampler.foreground = true;
+    }
 }

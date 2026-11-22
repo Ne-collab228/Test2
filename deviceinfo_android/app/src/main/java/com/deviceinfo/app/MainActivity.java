@@ -63,6 +63,20 @@ public class MainActivity extends Activity {
     private TextView status;
     private int current = 0;
     private boolean resumed;
+    /** Для отчёта: когда открыто приложение и сколько оно было на экране. */
+    private long launchedAt, fgMs, fgSince;
+
+    /** Свернули приложение: лёгкие замеры раз в 10 с, пока экран включён (если не ведёт служба слежения). */
+    private final Runnable bgTick = new Runnable() {
+        @Override public void run() {
+            if (resumed || isFinishing()) return;
+            final Context app = getApplicationContext();
+            if (!EnergyService.running && BgSampler.wanted(app)) {
+                try { background.execute(() -> BgSampler.tick(app)); } catch (Throwable ignored) { }
+            }
+            ui.postDelayed(this, BgSampler.PERIOD_MS);
+        }
+    };
     private volatile boolean busy;
 
     /** Текущая отрисовка: элементы и их View (для обновления «на месте»). */
@@ -95,6 +109,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        launchedAt = android.os.SystemClock.elapsedRealtime();
         th = Theme.load(this);
         period = Theme.period(this);
         getWindow().getDecorView().setBackgroundColor(th.bg);
@@ -961,6 +976,10 @@ public class MainActivity extends Activity {
                 .append(" (").append(Build.DEVICE).append(")\n")
                 .append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", java.util.Locale.US)
                         .format(new java.util.Date())).append('\n');
+        long nowEl = android.os.SystemClock.elapsedRealtime();
+        long onScreen = fgMs + (resumed ? nowEl - fgSince : 0);
+        sb.append("Снят через ").append(Util.duration((nowEl - launchedAt) / 1000.0))
+                .append(" после запуска, из них на экране ").append(Util.duration(onScreen / 1000.0)).append('\n');
         for (int i = 0; i < pages.size(); i++) {
             Page p = pages.get(i);
             Section s = buildSafe(p, app);
@@ -1121,6 +1140,9 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        BgSampler.foreground = true;
+        fgSince = android.os.SystemClock.elapsedRealtime();
+        ui.removeCallbacks(bgTick);
         // слежение за расходом было включено, но служба не работает (обновление приложения, выгрузка MagicOS)
         if (!EnergyService.running && EnergyService.enabled(this)) EnergyService.start(this);
         if (!OverlayService.running && getSharedPreferences(OverlayService.PREFS, MODE_PRIVATE).getBoolean("enabled", false)
@@ -1132,7 +1154,11 @@ public class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         resumed = false;
+        BgSampler.foreground = false;
+        fgMs += android.os.SystemClock.elapsedRealtime() - fgSince;
         ui.removeCallbacks(tick);
+        ui.removeCallbacks(bgTick);
+        ui.postDelayed(bgTick, BgSampler.PERIOD_MS);
         final Page p = pages.get(current);
         final Context app = getApplicationContext();
         worker.execute(() -> { try { synchronized (p) { p.onHide(app); } } catch (Throwable ignored) { } });

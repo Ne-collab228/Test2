@@ -31,6 +31,17 @@ public class EnergyService extends Service {
     static volatile EnergyStats stats;
 
     private BroadcastReceiver rx;
+    /** Фоновые замеры раз в 10 с, пока экран включён (без wake lock). */
+    private final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final java.util.concurrent.ExecutorService exec = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final Runnable sample = new Runnable() {
+        @Override public void run() {
+            if (!running) return;
+            final Context app = getApplicationContext();
+            if (BgSampler.wanted(app)) { try { exec.execute(() -> BgSampler.tick(app)); } catch (Throwable ignored) { } }
+            h.postDelayed(this, BgSampler.PERIOD_MS);
+        }
+    };
     private long lastNotify;
 
     @Override public IBinder onBind(Intent intent) { return null; }
@@ -82,11 +93,15 @@ public class EnergyService extends Service {
             f.addAction(Intent.ACTION_POWER_DISCONNECTED);
             Intent sticky = registerReceiver(rx, f);
             if (sticky != null) onEvent(sticky);
+            h.post(sample);
         }
         return START_STICKY;
     }
 
     private synchronized void onEvent(Intent i) {
+        // экран выключен — замеры не нужны (телефон всё равно заснёт), включён — возобновить
+        if (Intent.ACTION_SCREEN_OFF.equals(i.getAction())) h.removeCallbacks(sample);
+        else if (Intent.ACTION_SCREEN_ON.equals(i.getAction())) { h.removeCallbacks(sample); h.post(sample); }
         try {
             EnergyStats s = stats;
             if (s == null) return;
@@ -169,6 +184,8 @@ public class EnergyService extends Service {
 
     @Override public void onDestroy() {
         running = false;
+        h.removeCallbacksAndMessages(null);
+        exec.shutdownNow();
         EnergyStats s = stats;
         if (s != null) s.save(this);
         stats = null;
