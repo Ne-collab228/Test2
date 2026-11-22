@@ -11,7 +11,7 @@ public final class Theme {
 
     static final String[] ACCENT_NAMES = {"Оранжевый", "Красный", "Розовый", "Фиолетовый", "Синий", "Бирюзовый", "Зелёный", "Жёлтый"};
     static final int[] ACCENTS = {0xFFFF7A45, 0xFFE5484D, 0xFFE54D9B, 0xFF8E6CEF, 0xFF3E8BFF, 0xFF12B5A5, 0xFF46A758, 0xFFF5B100};
-    static final String[] MODE_NAMES = {"Тёмная", "Светлая", "Как в системе"};
+    static final String[] MODE_NAMES = {"Тёмная", "Светлая", "Системная"};
     static final long[] PERIODS = {500, 1000, 2000, 3000, 5000};
     static final long DEFAULT_PERIOD = 1000;
 

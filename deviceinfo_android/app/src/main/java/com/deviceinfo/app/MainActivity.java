@@ -694,8 +694,7 @@ public class MainActivity extends Activity {
         LinearLayout modes = new LinearLayout(this);
         for (int i = 0; i < Theme.MODE_NAMES.length; i++) {
             final int k = i;
-            Button b = makeButton(Theme.MODE_NAMES[i], false);
-            b.setTextSize(13);
+            Button b = chip(Theme.MODE_NAMES[i]);
             b.setOnClickListener(v -> { mode[0] = k; markChoice(modeBtns, k); });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1);
             lp.setMargins(dp(2), 0, dp(2), 0);
@@ -738,8 +737,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < Theme.PERIODS.length; i++) {
             final int k = i;
             if (Theme.PERIODS[i] == period) sel = i;
-            Button b = makeButton(periodText(Theme.PERIODS[i]), false);
-            b.setTextSize(13);
+            Button b = chip(periodText(Theme.PERIODS[i]));
             b.setOnClickListener(v -> { per[0] = Theme.PERIODS[k]; markChoice(perBtns, k); });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(40), 1);
             lp.setMargins(dp(2), 0, dp(2), 0);
@@ -779,6 +777,15 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Отмена", null)
                 .show();
+    }
+
+    /** Кнопка-переключатель в настройках: одна строка, без лишних отступов. */
+    Button chip(String text) {
+        Button b = makeButton(text, false);
+        b.setTextSize(13);
+        b.setMaxLines(1);
+        b.setPadding(dp(2), 0, dp(2), 0);
+        return b;
     }
 
     TextView settingsTitle(String s) {

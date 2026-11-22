@@ -64,6 +64,18 @@ public class ChartView extends View {
                 c.drawCircle(x, y, 1.1f * d, dot);
 
         int n = values.length;
+        if (n == 0) {
+            label.setColor(th.muted);
+            String msg = "сбор данных…";
+            c.drawText(msg, (w - label.measureText(msg)) / 2, (top + bottom) / 2, label);
+            label.setColor(th.text);
+            return;
+        }
+        if (n == 1 && hi > lo) {
+            float y = (float) (bottom - (Math.max(lo, Math.min(hi, values[0])) - lo) / (hi - lo) * (bottom - top));
+            end.setColor(color);
+            c.drawCircle(right - 4 * d, y, 3.5f * d, end);
+        }
         if (n >= 2 && hi > lo) {
             float gx = left + 52 * d; // место под подписи слева
             float dx = (right - gx) / Math.max(1, n - 1);
