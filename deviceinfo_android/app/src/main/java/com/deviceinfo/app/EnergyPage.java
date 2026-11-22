@@ -144,6 +144,11 @@ public class EnergyPage implements Page {
                         android.os.SystemClock.elapsedRealtime()));
                 out.row("Хватит при таком использовании", left != null ? left : "считаю… (≈ 30 с)",
                         left != null ? Section.INFO : Section.MUTED);
+            } else if (r != null && cap > 0) {
+                String full = Remaining.chargeText(Remaining.hoursToFull(cap, r[0], System.currentTimeMillis(),
+                        android.os.SystemClock.elapsedRealtime()));
+                out.row("Зарядится примерно через", full != null ? full : "считаю… (≈ 30 с)",
+                        full != null ? Section.OK : Section.MUTED);
             }
             if (BgSampler.foreground)
                 out.note("Сейчас приложение открыто и экран включён — это расход «в работе», не в простое.");

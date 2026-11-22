@@ -392,11 +392,20 @@ public class BatteryPage implements Page {
         // Реальная ёмкость — только по точному замеру; без него — паспортная.
         double capMah = precise != null ? precise.capacityMah : designMah;
         boolean haveDesign = capMah > 0 && !Double.isNaN(lvl);
-        if (chargingNow) Remaining.reset();
-        else if (haveDesign) {
-            String left = Remaining.text(Remaining.hoursLeft(capMah, lvl, now, SystemClock.elapsedRealtime()));
-            if (left != null) out.row("Хватит примерно на", left, Section.INFO);
-            else out.row("Хватит примерно на", "считаю… (≈ 30 с)", Section.MUTED);
+        if (chargingNow) {
+            Remaining.reset();
+            if (haveDesign) {
+                String full = Remaining.chargeText(Remaining.hoursToFull(capMah, lvl, now, SystemClock.elapsedRealtime()));
+                if (full != null) out.row("Зарядится примерно через", full, Section.OK);
+                else out.row("Зарядится примерно через", "считаю… (≈ 30 с)", Section.MUTED);
+            }
+        } else {
+            Remaining.resetCharge();
+            if (haveDesign) {
+                String left = Remaining.text(Remaining.hoursLeft(capMah, lvl, now, SystemClock.elapsedRealtime()));
+                if (left != null) out.row("Хватит примерно на", left, Section.INFO);
+                else out.row("Хватит примерно на", "считаю… (≈ 30 с)", Section.MUTED);
+            }
         }
         if (!counterStatic && !Double.isNaN(counter)) {
             out.row("Текущий заряд", Util.f("%.0f мА·ч (счётчик контроллера)", counter), Section.INFO);
@@ -577,8 +586,10 @@ public class BatteryPage implements Page {
         out.row("С момента включения", Util.duration(SystemClock.elapsedRealtime() / 1000.0));
         String gather = "Сбор данных… (нужно ≥ 15 мин и ≥ 2 %)";
         if (chargingNow) {
-            if (est[0] == 2) out.row("До полной зарядки (оценка)", Util.duration(est[1]), Section.INFO);
-            else out.row("До полной зарядки (оценка)", gather, Section.MUTED);
+            out.note("«Зарядится примерно через» (вверху): первая оценка — через 30 с по току зарядки, дальше она "
+                    + "уточняется по среднему за 10 минут. Учтено, что после 80 % телефон снижает ток и последние "
+                    + "проценты идут медленнее. Если включена умная зарядка, телефон может сам задержаться на 80 %.");
+            if (est[0] == 2) out.row("До полной (по росту процентов)", Util.duration(est[1]), Section.INFO);
         } else {
             out.note("«Хватит примерно на» (вверху): первая оценка — через 30 с, дальше она уточняется по среднему "
                     + "расходу за 10 минут без случайных всплесков и меняется плавно. Долгосрочный расход в простое и с экраном — во вкладке «Энергия».");
