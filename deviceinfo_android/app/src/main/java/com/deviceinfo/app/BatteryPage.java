@@ -122,7 +122,37 @@ public class BatteryPage implements Page {
     private double[] designCache;   // {mAh}
     private String designSrc;
 
+    static final Series CUR = new Series(300, 120_000);
+    private static volatile int curSign = 1;
+
+    /** Добавить точку тока, если последняя старше ~800 мс. */
+    static void recordCurrent(double ma) {
+        if (Double.isNaN(ma)) return;
+        long t = SystemClock.elapsedRealtime();
+        if (lastCurAt >= 0 && t - lastCurAt < 800) return;
+        lastCurAt = t;
+        CUR.add(t, ma);
+    }
+    private static volatile long lastCurAt = -1;
+
+    /** Скорость зарядки (%/ч) по текущему сеансу: нужно ≥ 2 мин и ≥ 1 %; иначе NaN. */
+    static double sessionChargeRate(long startMs, double fromLevel, long nowMs, double level) {
+        long dt = nowMs - startMs;
+        double dl = level - fromLevel;
+        if (Double.isNaN(level) || Double.isNaN(fromLevel) || dt < 120_000 || dl < 1.0) return Double.NaN;
+        return dl / (dt / 3600000.0);
+    }
+
+    /** Строка «isCharging()» противоречит статусу/току — прошивка её не обновляет. */
+    static boolean isChargingStale(boolean isCharging, boolean chargingNow, double curMa) {
+        return !isCharging && (chargingNow || (!Double.isNaN(curMa) && curMa > 50));
+    }
+
     @Override public void tick(Context ctx) {
+        try {
+            double[] r = BatteryMeter.read(ctx);
+            if (r != null && !Double.isNaN(r[3])) recordCurrent(r[3] * curSign);
+        } catch (Throwable ignored) { }
         design(ctx);
         if (BatteryWearService.running) return; // службе принадлежит замер
         BatteryMeter.tick(ctx, designCache[0]);
@@ -256,6 +286,7 @@ public class BatteryPage implements Page {
         boolean inverted = votes <= -3 || (votes < 3 && vote < 0);
         int sign = inverted ? -1 : 1;
         BatteryMeter.setSign(sign);
+        curSign = sign;
         if (!Double.isNaN(curMa)) curMa *= sign;
         if (!Double.isNaN(avgMa)) avgMa *= sign;
 
@@ -308,7 +339,8 @@ public class BatteryPage implements Page {
                     BatteryMeter.currentAvg(now, 60_000));
 
         // --- Состояние ---
-        out.header("Состояние");
+        recordCurrent(curMa);
+        out.header("Состояние", Double.isNaN(lvl) ? null : Util.f("%.0f %%", lvl), Section.NORMAL);
         if (!Double.isNaN(lvl)) out.bar("Уровень заряда", Util.f("%.0f %%", lvl), lvl,
                 lvl <= 15 ? Section.CRIT : (lvl <= 30 ? Section.WARN : Section.OK));
         boolean haveDesign = designMah > 0 && !Double.isNaN(lvl);
@@ -338,6 +370,8 @@ public class BatteryPage implements Page {
         if (!Double.isNaN(curMa)) out.row("Ток", Util.f("%+.0f мА (%s)", curMa, curMa > 0 ? "+ в батарею" : "− из батареи"),
                 curMa > 0 ? Section.OK : Section.NORMAL);
         else out.row("Ток", null);
+        out.chart("Ток", Double.isNaN(curMa) ? "—" : Util.f("%+.0f мА", curMa),
+                CUR.values(SystemClock.elapsedRealtime()), Double.NaN, Double.NaN, " мА", Section.NORMAL);
         if (!Double.isNaN(avgMa)) out.row("Средний ток", Util.f("%+.0f мА", avgMa));
         if (volt != null && !Double.isNaN(curMa)) {
             double p = volt * curMa / 1000.0;
@@ -359,11 +393,18 @@ public class BatteryPage implements Page {
         } else if (mcc > 0) out.row("Лимит тока зарядки", Util.f("%.2f А", mcc / 1e6));
         if (mcv > 0) out.row("Макс. напряжение зарядки", Util.f("%.1f В", mcv / 1e6));
         if (chargeMs > 0) out.row("До полной (оценка Android)", Util.duration(chargeMs / 1000.0), Section.INFO);
-        out.row("isCharging()", isCharging ? "Да" : "Нет");
+        if (isChargingStale(isCharging, chargingNow, curMa))
+            out.row("isCharging()", "Нет — прошивка не обновляет", Section.MUTED);
+        else out.row("isCharging()", isCharging ? "Да" : "Нет");
         double[] est = BatteryHistory.estimate(history.samples, now, Double.isNaN(lvl) ? 0 : lvl, chargingNow);
         if (est[0] == 2) out.row("До полной (оценка по истории)", Util.duration(est[1]), Section.INFO);
-        double cr = BatteryHistory.chargeRate(history.samples, now);
-        out.row("Скорость зарядки", Double.isNaN(cr) ? null : Util.f("%.1f %%/ч", cr));
+        if (chargingNow) {
+            double cr = BatteryHistory.chargeRate(history.samples, now);
+            if (Double.isNaN(cr) && history.open != null)
+                cr = sessionChargeRate(history.open.start, history.open.from, now, lvl);
+            if (Double.isNaN(cr)) out.row("Скорость зарядки", "сбор данных…", Section.MUTED);
+            else out.row("Скорость зарядки", Util.f("≈ %.0f %%/ч", cr));
+        }
         if (valid(energy) && energy > 0) out.row("Энергия", Util.f("%.2f Вт·ч", energy / 1e9));
 
         // --- Ёмкость и износ ---
@@ -506,8 +547,9 @@ public class BatteryPage implements Page {
             out.row("Осталось по текущему расходу", Util.duration(remH * 3600), Section.INFO);
         }
         double dr = BatteryHistory.dischargeRate(history.samples, now);
-        out.row("Скорость разряда", Double.isNaN(dr) ? (chargingNow ? null : gather) : Util.f("%.1f %%/ч", dr),
-                Double.isNaN(dr) ? Section.MUTED : Section.NORMAL);
+        if (!chargingNow)
+            out.row("Скорость разряда", Double.isNaN(dr) ? gather : Util.f("%.1f %%/ч", dr),
+                    Double.isNaN(dr) ? Section.MUTED : Section.NORMAL);
         if (!chargingNow)
             for (BatteryHistory.Session s : history.allSessions())
                 if (!s.open) { out.row("С последней зарядки", Util.duration((now - s.end) / 1000.0)); break; }

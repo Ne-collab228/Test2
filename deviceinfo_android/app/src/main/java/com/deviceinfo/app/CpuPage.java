@@ -25,6 +25,24 @@ public class CpuPage implements Page {
     private static final Map<Integer, Long> prevIdle = new HashMap<>();
     private static long prevWallNs = -1;
     private static LoadResult idleCache;
+    /** История общей загрузки CPU для графика. */
+    static final Series LOAD = new Series(300, 120_000);
+    private static long loadAt = -1;
+    private static LoadResult loadCache;
+
+    /** Фоновый замер: общая загрузка пишется в историю даже когда вкладка закрыта. */
+    @Override public void tick(Context ctx) {
+        try { sampleTick(); } catch (Throwable ignored) { }
+    }
+
+    private static synchronized void sampleTick() {
+        CpuInfo.Proc proc = CpuInfo.parseCpuinfo();
+        List<Integer> ids = CpuInfo.cpuIds(proc);
+        Set<Integer> online = CpuInfo.onlineSet(ids);
+        Map<Integer, CpuInfo.Cluster> clusterOf = new HashMap<>();
+        for (CpuInfo.Cluster c : CpuInfo.clusters(ids, proc)) for (int id : c.cpus) clusterOf.put(id, c);
+        computeLoad(ids, online, clusterOf);
+    }
 
     static final class LoadResult {
         final Map<Integer, Double> loads = new HashMap<>(); // -1 = общая
@@ -35,6 +53,7 @@ public class CpuPage implements Page {
     /** Сброс накопленных значений (для тестов). */
     public static synchronized void resetState() {
         prevStat.clear(); lastStatLoad.clear(); prevIdle.clear(); prevWallNs = -1; idleCache = null;
+        loadAt = -1; loadCache = null; LOAD.clear();
     }
 
     @Override public void build(Context ctx, Section out) {
@@ -134,8 +153,11 @@ public class CpuPage implements Page {
 
         // --- Нагрузка ---
         LoadResult lr = computeLoad(ids, online, clusterOf);
-        out.header("Загрузка по ядрам");
         Double all = lr.loads.get(-1);
+        out.header("Загрузка по ядрам", all == null ? null : Util.f("%.0f %%", all), Section.NORMAL);
+        if (all != null)
+            out.chart("Загрузка CPU", Util.f("%.0f %%", all), LOAD.values(SystemClock.elapsedRealtime()), 0, 100, "%",
+                    Section.NORMAL);
         if (all != null) out.bar("Общая", Util.f("%.0f%%", all), all, Section.level(all, 60, 85));
         else out.row("Общая", "измеряется…", Section.MUTED);
         for (int id : ids) {
@@ -179,7 +201,21 @@ public class CpuPage implements Page {
 
     // ================= загрузка =================
 
+    /**
+     * Общий расчёт загрузки для build() и tick(): не чаще раза в ~700 мс (иначе короткие интервалы
+     * портят дельты); результат пишется в историю графика.
+     */
     private static LoadResult computeLoad(List<Integer> ids, Set<Integer> online, Map<Integer, CpuInfo.Cluster> clusterOf) {
+        long t = SystemClock.elapsedRealtime();
+        if (loadCache != null && loadAt >= 0 && t - loadAt < 700 && t >= loadAt) return loadCache;
+        LoadResult r = computeLoadRaw(ids, online, clusterOf);
+        loadAt = t; loadCache = r;
+        Double all = r.loads.get(-1);
+        if (all != null) LOAD.add(t, all);
+        return r;
+    }
+
+    private static LoadResult computeLoadRaw(List<Integer> ids, Set<Integer> online, Map<Integer, CpuInfo.Cluster> clusterOf) {
         LoadResult r = statLoad(ids);
         if (r != null) return r;
         r = idleLoad(ids, online);

@@ -302,4 +302,52 @@ public class HelpersTest {
         org.junit.Assert.assertFalse(BatteryPage.isBatteryProp("ro.vendor.pq.mtk_hfg_support"));
         org.junit.Assert.assertFalse(BatteryPage.isBatteryProp("sys.nvcfg_errorno0"));
     }
+
+    @Test public void thermal_forecastStatus_contradictionFromReport() {
+        Map<Integer, Float> th = new HashMap<>();
+        th.put(1, 0.80f); th.put(2, 0.90f);
+        // реальный отчёт: шкала 0.93, пороги 0.80 / 0.90 -> «Умеренный», а система говорит «Норма»
+        assertEquals(2, ThermalPage.forecastStatus(0.93f, th));
+        assertEquals("Умеренный", ThermalPage.statusName(2));
+        assertEquals(1, ThermalPage.forecastStatus(0.85f, th));
+        assertEquals(0, ThermalPage.forecastStatus(0.5f, th));
+        assertEquals(3, ThermalPage.forecastStatus(1.0f, th));   // «Сильный» = 1.00 подразумевается
+        assertEquals(0, ThermalPage.forecastStatus(0.99f, null));
+        assertEquals(3, ThermalPage.forecastStatus(1.2f, null));
+        assertEquals(0, ThermalPage.forecastStatus(Float.NaN, th));
+    }
+
+    @Test public void thermal_parseTempText() {
+        assertEquals(38.0, ThermalPage.parseTempText("38000"), 1e-9);
+        assertEquals(41.5, ThermalPage.parseTempText("41500 1 2"), 1e-9);
+        assertTrue(Double.isNaN(ThermalPage.parseTempText(null)));
+        assertTrue(Double.isNaN(ThermalPage.parseTempText("нет")));
+    }
+
+    @Test public void battery_sessionChargeRate() {
+        long t0 = 1_000_000L;
+        // 28 -> 37 % за 7 мин ≈ 77 %/ч
+        assertEquals(77.1, BatteryPage.sessionChargeRate(t0, 28, t0 + 7 * 60_000L, 37), 0.2);
+        assertTrue(Double.isNaN(BatteryPage.sessionChargeRate(t0, 28, t0 + 60_000L, 30)));   // < 2 мин
+        assertTrue(Double.isNaN(BatteryPage.sessionChargeRate(t0, 28, t0 + 5 * 60_000L, 28))); // < 1 %
+        assertTrue(Double.isNaN(BatteryPage.sessionChargeRate(t0, 28, t0 + 5 * 60_000L, Double.NaN)));
+    }
+
+    @Test public void battery_isChargingStale() {
+        assertTrue(BatteryPage.isChargingStale(false, true, 3065));
+        assertTrue(BatteryPage.isChargingStale(false, false, 800));
+        assertFalse(BatteryPage.isChargingStale(true, true, 3065));
+        assertFalse(BatteryPage.isChargingStale(false, false, -500));
+    }
+
+    @Test public void series_chartPresentInText() {
+        Series s = new Series(10, 120_000);
+        for (int i = 0; i < 5; i++) s.add(1000L * i, 30 + i);
+        Section sec = new Section();
+        sec.header("Сводка", "38.3 °C", Section.NORMAL);
+        sec.chart("Температура батареи", "38.3 °C", s.values(5000), Double.NaN, Double.NaN, " °C", Section.NORMAL);
+        String t = sec.toText();
+        assertTrue(t, t.contains("[Сводка] 38.3 °C"));
+        assertTrue(t, t.contains("график: 5 точек, шкала 30 °C – 34 °C"));
+    }
 }

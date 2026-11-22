@@ -49,20 +49,44 @@ public class MemoryPage implements Page {
         return m;
     }
 
+    static final Series USED = new Series(300, 120_000);
+    private static volatile long usedAt = -1;
+
+    static void recordUsed(double pct) {
+        long t = android.os.SystemClock.elapsedRealtime();
+        if (usedAt >= 0 && t - usedAt < 800) return;
+        usedAt = t;
+        USED.add(t, pct);
+    }
+
+    @Override public void tick(Context ctx) {
+        try {
+            ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+            ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+            am.getMemoryInfo(mi);
+            if (mi.totalMem > 0) recordUsed((mi.totalMem - mi.availMem) * 100.0 / mi.totalMem);
+        } catch (Throwable ignored) { }
+    }
+
     @Override public void build(Context ctx, Section out) {
         ActivityManager am = (ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
         ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
         am.getMemoryInfo(mi);
         Map<String, Long> m = meminfo();
 
-        out.header("Оперативная память (RAM)");
         long total = mi.totalMem > 0 ? mi.totalMem : val(m, "MemTotal");
         long avail = mi.availMem > 0 ? mi.availMem : val(m, "MemAvailable");
         long used = total - avail;
+        double usedPct = total > 0 ? used * 100.0 / total : 0;
+        if (total > 0) recordUsed(usedPct);
+        out.header("Оперативная память (RAM)", total > 0 ? Util.f("%.0f %%", usedPct) : null,
+                Section.level(usedPct, 75, 90));
         out.row("Номинальный объём", nominalGb(total) + " ГБ");
         out.row("Доступно системе (видимо)", Util.bytes(total));
         out.bar("Использовано", Util.bytes(used) + " из " + Util.bytes(total),
                 total > 0 ? used * 100.0 / total : 0, Section.level(total > 0 ? used * 100.0 / total : 0, 75, 90));
+        out.chart("Использование RAM", Util.f("%.0f %%", usedPct),
+                USED.values(android.os.SystemClock.elapsedRealtime()), 0, 100, "%", Section.level(usedPct, 75, 90));
         out.row("Свободно (доступно)", Util.bytes(avail));
         out.row("Порог малой памяти", Util.bytes(mi.threshold));
         out.row("Мало памяти", mi.lowMemory ? "Да" : "Нет", mi.lowMemory ? Section.CRIT : Section.OK);

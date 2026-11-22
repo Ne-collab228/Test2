@@ -345,6 +345,30 @@ public class HonorX6cSimulationTest {
         assertTrue(t, t.contains("47") || t.contains("45"));
     }
 
+    @Test public void pagesHaveChartsAndBigValues() throws Exception {
+        setup("sysroot");
+        for (Class<? extends Page> c : java.util.Arrays.asList(CpuPage.class, ThermalPage.class,
+                BatteryPage.class, MemoryPage.class)) {
+            Page p = c.getDeclaredConstructor().newInstance();
+            Section s = build(p, ctx);
+            boolean chart = false, big = false;
+            for (Section.Item it : s.items) {
+                if (it.type == 6) chart = true;
+                if (it.type == 0 && it.value != null) big = true;
+            }
+            System.out.println(c.getSimpleName() + " chart=" + chart + " big=" + big);
+            assertTrue(c.getSimpleName() + " chart", chart || c == CpuPage.class);
+            assertTrue(c.getSimpleName() + " big", big || c == CpuPage.class);
+        }
+    }
+
+    @Test public void thermalHasDiagnosticsAndStatusRows() throws Exception {
+        setup("sysroot");
+        String t = textOf(ThermalPage.class);
+        assertTrue(t, t.contains("Источники температуры (диагностика)"));
+        assertTrue(t, t.contains("Статус сейчас (система)"));
+    }
+
     @Test public void allPages_openThermal() throws Exception {
         setup("sysroot_open");
         writeReport("open", buildAll("open"));
@@ -365,6 +389,7 @@ public class HonorX6cSimulationTest {
         ctx = null;
         setup("sysroot");
         Util.root = tmp.getAbsolutePath();
+        CpuPage.resetState();
         CpuPage page = new CpuPage();
         build(page, ctx);
         for (int i = 0; i < 8; i++) {

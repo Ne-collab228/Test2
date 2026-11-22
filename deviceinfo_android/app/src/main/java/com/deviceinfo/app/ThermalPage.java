@@ -18,6 +18,110 @@ public class ThermalPage implements Page {
     private static final String[] STATUS = {"Норма", "Лёгкий", "Умеренный", "Сильный", "Критический", "Аварийный", "Отключение"};
     private static final String[] CPU_TYPES = {"mtktscpu", "cpu-little", "cpu-big", "soc_max", "cpu", "tsens", "apc", "cluster", "cpuss"};
 
+    static final Series BAT_TEMP = new Series(300, 120_000);
+    static final Series HEAD = new Series(300, 120_000);
+    private static volatile long batAt = -1, headSampleAt = -1;
+
+    static void recordBat(double c) {
+        if (Double.isNaN(c)) return;
+        long t = SystemClock.elapsedRealtime();
+        if (batAt >= 0 && t - batAt < 800) return;
+        batAt = t; BAT_TEMP.add(t, c);
+    }
+
+    static void recordHead(double h) {
+        if (Double.isNaN(h)) return;
+        long t = SystemClock.elapsedRealtime();
+        if (headSampleAt >= 0 && t - headSampleAt < 800) return;
+        headSampleAt = t; HEAD.add(t, h);
+    }
+
+    static double batteryTemp(Context ctx) {
+        try {
+            Intent i = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (i != null) {
+                int t = i.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
+                if (t != Integer.MIN_VALUE) return t / 10.0;
+            }
+        } catch (Throwable ignored) { }
+        return Double.NaN;
+    }
+
+    /**
+     * Статус по прогнозу шкалы: наивысший статус, чей порог <= headroom (порог "Сильный" = 1.00,
+     * если система его не прислала); 0 = "Норма".
+     */
+    static int forecastStatus(float h, java.util.Map<Integer, Float> th) {
+        if (Float.isNaN(h)) return 0;
+        java.util.TreeMap<Integer, Float> m = new java.util.TreeMap<>();
+        if (th != null) for (java.util.Map.Entry<Integer, Float> e : th.entrySet())
+            if (e.getKey() != null && e.getValue() != null && !Float.isNaN(e.getValue())) m.put(e.getKey(), e.getValue());
+        if (!m.containsKey(3)) m.put(3, 1.0f);
+        int best = 0;
+        for (java.util.Map.Entry<Integer, Float> e : m.entrySet())
+            if (e.getKey() > 0 && e.getValue() <= h + 1e-6f && e.getKey() > best) best = e.getKey();
+        return best;
+    }
+
+    static String statusName(int st) {
+        return st >= 0 && st < STATUS.length ? STATUS[st] : "неизвестно (" + st + ")";
+    }
+
+    static final String FORECAST_NOTE = "Шкала — прогноз Android на 10 секунд вперёд, а прошивка Honor управляет "
+            + "нагревом сама и может не повышать статус.";
+
+    /** Первое число из содержимого файла температуры -> °C или NaN. */
+    static double parseTempText(String content) {
+        if (content == null) return Double.NaN;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("-?\\d+").matcher(content);
+        if (!m.find()) return Double.NaN;
+        try { return normalizeTemp(Long.parseLong(m.group())); } catch (Exception e) { return Double.NaN; }
+    }
+
+    /** Расширенные источники температуры (без рекурсивных обходов). Строки: {путь, тип, результат}. */
+    static List<String[]> probeExtra(double[] cpuOut, String[] cpuName, java.util.Set<String> seenZones) {
+        List<String[]> rows = new ArrayList<>();
+        String vb = "/sys/devices/virtual/thermal";
+        for (String z : Util.list(vb)) {
+            if (!z.startsWith("thermal_zone") || seenZones.contains(z)) continue;
+            String type = Util.read(vb + "/" + z + "/type");
+            double c = parseTempText(Util.read(vb + "/" + z + "/temp"));
+            rows.add(new String[]{vb + "/" + z + "/temp", type == null ? "—" : type, Double.isNaN(c) ? "нет доступа" : fmt(c)});
+            offerCpu(cpuOut, cpuName, type, c);
+        }
+        if (Util.list(vb).length == 0)
+            rows.add(new String[]{vb + "/thermal_zone*/temp", "—", "нет доступа"});
+        String[] mt = Util.list("/proc/mtktz");
+        if (mt.length == 0) rows.add(new String[]{"/proc/mtktz/mtktscpu", "—", "нет доступа"});
+        for (int i = 0; i < mt.length && i < 20; i++) {
+            double c = parseTempText(Util.read("/proc/mtktz/" + mt[i]));
+            rows.add(new String[]{"/proc/mtktz/" + mt[i], mt[i], Double.isNaN(c) ? "нет доступа" : fmt(c)});
+            offerCpu(cpuOut, cpuName, mt[i], c);
+        }
+        int n = 0;
+        for (String d : Util.list("/sys/devices/platform")) {
+            String ld = d.toLowerCase(Locale.ROOT);
+            if (!(ld.contains("thermal") || ld.contains("tsens"))) continue;
+            if (n++ >= 10) break;
+            boolean any = false;
+            for (String f : Util.list("/sys/devices/platform/" + d)) {
+                if (!f.startsWith("temp") && !f.startsWith("cpu")) continue;
+                double c = parseTempText(Util.read("/sys/devices/platform/" + d + "/" + f));
+                if (Double.isNaN(c)) continue;
+                any = true;
+                rows.add(new String[]{"/sys/devices/platform/" + d + "/" + f, d, fmt(c)});
+                offerCpu(cpuOut, cpuName, d + "/" + f, c);
+            }
+            if (!any) rows.add(new String[]{"/sys/devices/platform/" + d, d, "нет доступа"});
+        }
+        return rows;
+    }
+
+    private static void offerCpu(double[] cpuOut, String[] cpuName, String type, double c) {
+        if (Double.isNaN(c) || !isCpuType(type)) return;
+        if (Double.isNaN(cpuOut[0]) || c > cpuOut[0]) { cpuOut[0] = c; cpuName[0] = type; }
+    }
+
     private static long headroomAt = -1;
     private static float headroomVal = Float.NaN;
 
@@ -66,12 +170,17 @@ public class ThermalPage implements Page {
         double cpu = Double.NaN, gpu = Double.NaN, bat = Double.NaN;
         String cpuName = null, gpuName = null;
         int valid = 0;
+        List<String[]> diag = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
         for (String z : Util.list("/sys/class/thermal")) {
             if (!z.startsWith("thermal_zone")) continue;
+            seen.add(z);
             String type = Util.read("/sys/class/thermal/" + z + "/type");
             Long raw = Util.readLong("/sys/class/thermal/" + z + "/temp");
+            double c = raw == null ? Double.NaN : normalizeTemp(raw);
+            diag.add(new String[]{"/sys/class/thermal/" + z + "/temp", type == null ? "—" : type,
+                    raw == null ? "нет доступа" : Double.isNaN(c) ? "не число (" + raw + ")" : fmt(c)});
             if (raw == null) continue;
-            double c = normalizeTemp(raw);
             if (Double.isNaN(c)) continue;
             valid++;
             rows.add(new String[]{z.replace("thermal_zone", "zone"), type == null ? "—" : type, fmt(c)});
@@ -81,33 +190,38 @@ public class ThermalPage implements Page {
             if (isBatteryType(type) && (Double.isNaN(bat) || c > bat)) bat = c;
         }
 
-        // батарея из интента
-        double batIntent = Double.NaN;
-        try {
-            Intent i = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-            if (i != null) {
-                int t = i.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
-                if (t != Integer.MIN_VALUE) batIntent = t / 10.0;
-            }
-        } catch (Throwable ignored) { }
+        // дополнительные источники
+        double[] cpuBox = {cpu};
+        String[] cpuNameBox = {cpuName};
+        diag.addAll(probeExtra(cpuBox, cpuNameBox, seen));
+        cpu = cpuBox[0]; cpuName = cpuNameBox[0];
 
-        out.header("Сводка");
+        // батарея из интента
+        double batIntent = batteryTemp(ctx);
+        double batShown = !Double.isNaN(batIntent) ? batIntent : bat;
+        recordBat(batShown);
+
+        out.header("Сводка", Double.isNaN(batShown) ? null : fmt(batShown), Section.NORMAL);
         if (!Double.isNaN(cpu)) out.row("Процессор", fmt(cpu) + " (" + cpuName + ")", Section.temp(cpu));
-        else out.row("Процессор", "нет данных", Section.MUTED);
+        else out.row("Процессор", "закрыто прошивкой (другие приложения обычно показывают температуру батареи)",
+                Section.MUTED);
         if (!Double.isNaN(gpu)) out.row("GPU", fmt(gpu) + " (" + gpuName + ")", Section.temp(gpu));
         if (!Double.isNaN(batIntent)) out.row("Батарея", fmt(batIntent), Section.temp(batIntent));
         else if (!Double.isNaN(bat)) out.row("Батарея", fmt(bat) + " (датчик зоны)", Section.temp(bat));
         else out.row("Батарея", "нет данных", Section.MUTED);
+        out.chart("Температура батареи", Double.isNaN(batShown) ? "—" : fmt(batShown),
+                BAT_TEMP.values(SystemClock.elapsedRealtime()), Double.NaN, Double.NaN, " °C", Section.NORMAL);
 
         // --- нагрев по оценке Android ---
         out.header("Нагрев телефона (оценка Android)");
+        int curStatus = -1;
         try {
             PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
             if (pm != null && Build.VERSION.SDK_INT >= 29) {
-                int st = pm.getCurrentThermalStatus();
-                String name = st >= 0 && st < STATUS.length ? STATUS[st] : "неизвестно (" + st + ")";
-                out.row("Статус нагрева", name, st <= 0 ? Section.OK : st <= 2 ? Section.WARN : Section.CRIT);
-            } else out.row("Статус нагрева", "недоступно (нужен Android 10+)", Section.MUTED);
+                curStatus = pm.getCurrentThermalStatus();
+                out.row("Статус сейчас (система)", statusName(curStatus),
+                        curStatus <= 0 ? Section.OK : curStatus <= 2 ? Section.WARN : Section.CRIT);
+            } else out.row("Статус сейчас (система)", "недоступно (нужен Android 10+)", Section.MUTED);
             if (pm != null && Build.VERSION.SDK_INT >= 30) {
                 float h = headroom(pm);
                 if (Float.isNaN(h)) out.row("Шкала нагрева", "нет данных (прошивка не отдаёт)", Section.MUTED);
@@ -116,6 +230,12 @@ public class ThermalPage implements Page {
                     if (Build.VERSION.SDK_INT >= 35) {
                         try { th = pm.getThermalHeadroomThresholds(); } catch (Throwable ignored) { }
                     }
+                    recordHead(h);
+                    int fc = forecastStatus(h, th);
+                    out.row("По прогнозу шкалы", statusName(fc), fc <= 0 ? Section.OK : fc <= 2 ? Section.WARN : Section.CRIT);
+                    if (curStatus >= 0 && curStatus != fc) out.note(FORECAST_NOTE);
+                    out.chart("Шкала нагрева", Util.f("%.2f", h), HEAD.values(SystemClock.elapsedRealtime()), 0, 1.2, "",
+                            h >= 1.0f ? Section.CRIT : Section.NORMAL);
                     float light = lightThreshold(th);
                     // AOSP ThermalManagerService: headroom = (T − T_severe + 30) / 30,
                     // T — прогноз температуры корпуса (SKIN) через 10 с, T_severe — порог «Сильный».
@@ -181,6 +301,11 @@ public class ThermalPage implements Page {
                     + "нагрузкой пик заметно ниже максимума, прошивка снижает частоту (это и есть троттлинг).");
             else out.note("Это и есть настоящий троттлинг: когда телефон перегреется, здесь появится «ограничено до …».");
         }
+
+        // --- диагностика источников ---
+        out.header("Источники температуры (диагностика)");
+        if (diag.isEmpty()) out.note("Ни один путь не найден.");
+        else out.table(new String[]{"Путь", "Тип", "Результат"}, diag, new float[]{0.5f, 0.25f, 0.25f});
 
         // --- таблица зон ---
         out.header("Датчики thermal_zone");
@@ -274,6 +399,11 @@ public class ThermalPage implements Page {
     /** Фоновый отсчёт раз в 1.5 с, чтобы пик частоты копился и когда вкладка не открыта. */
     @Override public void tick(Context ctx) {
         try { sampleFreqs(cpuLimits(), SystemClock.elapsedRealtime()); } catch (Throwable ignored) { }
+        try { recordBat(batteryTemp(ctx)); } catch (Throwable ignored) { }
+        try {
+            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            if (pm != null && Build.VERSION.SDK_INT >= 30) recordHead(headroom(pm));
+        } catch (Throwable ignored) { }
     }
 
     /** Порог статуса «Лёгкий» из getThermalHeadroomThresholds; если его нет — 1.0 (порог «Сильный»). */
