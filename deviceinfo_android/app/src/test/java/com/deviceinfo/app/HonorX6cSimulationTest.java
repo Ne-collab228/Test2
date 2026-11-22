@@ -393,13 +393,13 @@ public class HonorX6cSimulationTest {
         org.robolectric.android.controller.ActivityController<MainActivity> c =
                 Robolectric.buildActivity(MainActivity.class).setup();
         Activity a = c.get();
-        List<Button> btns = new java.util.ArrayList<>();
-        collect(a.getWindow().getDecorView(), btns);
+        List<android.widget.TextView> btns = new java.util.ArrayList<>();
+        UiTest.collectText(a.getWindow().getDecorView(), btns);
         int tabs = 0;
         for (Page p : Pages.create()) {
-            for (Button b : btns) {
-                if (p.title().contentEquals(b.getText())) {
-                    b.performClick();
+            for (android.widget.TextView b : btns) {
+                if (p.title().contentEquals(b.getText()) && ((android.view.View) b.getParent()).isClickable()) {
+                    ((android.view.View) b.getParent()).performClick();
                     org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
                     Thread.sleep(400);
                     org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
