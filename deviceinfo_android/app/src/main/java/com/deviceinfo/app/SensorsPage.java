@@ -96,6 +96,13 @@ public class SensorsPage implements Page {
             if (r.rateHz > 0) txt += " · " + Util.f("%.0f Гц", r.rateHz);
             out.row(label, txt);
         }
+        long t = android.os.SystemClock.elapsedRealtime();
+        if (types.contains(Sensor.TYPE_ACCELEROMETER) && SensorLive.ACC.values(t).length > 1)
+            out.chart("Ускорение |a|", Util.f("%.2f м/с²", SensorLive.ACC.last()), SensorLive.ACC.values(t),
+                    Double.NaN, Double.NaN, " м/с²", Section.NORMAL);
+        if (types.contains(Sensor.TYPE_LIGHT) && SensorLive.LIGHT.values(t).length > 1)
+            out.chart("Освещённость", Util.f("%.0f лк", SensorLive.LIGHT.last()), SensorLive.LIGHT.values(t),
+                    Double.NaN, Double.NaN, " лк", Section.NORMAL);
         StringBuilder miss = new StringBuilder();
         if (!types.contains(Sensor.TYPE_GYROSCOPE)) miss.append("гироскоп");
         if (!types.contains(Sensor.TYPE_MAGNETIC_FIELD)) miss.append(miss.length() > 0 ? ", " : "").append("компас/магнитометр");

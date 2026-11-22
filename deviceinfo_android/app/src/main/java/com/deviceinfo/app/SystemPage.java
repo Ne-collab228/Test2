@@ -267,7 +267,7 @@ public class SystemPage implements Page {
                 {PackageManager.FEATURE_SENSOR_ACCELEROMETER, "Акселерометр"},
                 {PackageManager.FEATURE_SENSOR_HEART_RATE, "Пульс"},
                 {PackageManager.FEATURE_LOCATION_GPS, "GPS"},
-                {PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL, "Vulkan (уровень)"},
+                {PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL, "Поддержка Vulkan"},
                 {PackageManager.FEATURE_OPENGLES_EXTENSION_PACK, "OpenGL ES AEP"},
                 {PackageManager.FEATURE_USB_ACCESSORY, "USB accessory"},
                 {PackageManager.FEATURE_CONSUMER_IR, "ИК-порт"},

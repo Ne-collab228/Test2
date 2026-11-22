@@ -164,6 +164,8 @@ public final class BatteryMeter {
     /** Знак тока, определённый BatteryPage (−1 — прошивка инвертирует). */
     static void setSign(int sign) { currentSign = sign < 0 ? -1 : 1; }
 
+    static int sign() { return currentSign; }
+
     static synchronized void recordCurrent(long wallMs, double ma) { RING.add(wallMs, ma); }
     static synchronized List<Double> currentPoints(long now, long windowMs) { return RING.points(now, windowMs); }
     static synchronized double currentAvg(long now, long windowMs) { return RING.avg(now, windowMs); }

@@ -274,8 +274,8 @@ public class GpuPage implements Page {
             }
         } catch (Throwable ignored) { }
         out.row("Vulkan", vk == null ? "Не поддерживается / нет данных" : decodeVulkan(vk));
-        out.row("Vulkan: уровень", vkLevel);
-        out.row("Vulkan compute (уровень)", vkCompute);
+        out.row("Уровень возможностей Vulkan", vkLevel);
+        out.row("Уровень Vulkan compute", vkCompute);
         out.row("OpenGL ES AEP", aep ? "Да" : "Нет");
         out.row("deqp (OpenGL ES)", deqpGl == null ? null : decodeDeqp(deqpGl));
         out.row("deqp (Vulkan)", deqpVk == null ? null : decodeDeqp(deqpVk));

@@ -12,6 +12,7 @@ public final class Pages {
         l.add(new CpuPage());
         l.add(new GpuPage());
         l.add(new BatteryPage());
+        l.add(new EnergyPage());
         l.add(new DisplayPage());
         l.add(new MemoryPage());
         l.add(new ThermalPage());

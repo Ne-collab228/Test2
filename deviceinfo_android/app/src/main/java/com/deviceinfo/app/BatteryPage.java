@@ -106,6 +106,13 @@ public class BatteryPage implements Page {
         return 0;
     }
 
+    /** «Текущий заряд»: по ёмкости точного замера (если есть), иначе по паспортной. */
+    static String chargeText(double lvl, double preciseMah, double designMah) {
+        if (!Double.isNaN(preciseMah) && preciseMah > 0)
+            return Util.f("≈ %.0f мА·ч (уровень × ёмкость по точному замеру %.0f мА·ч)", preciseMah * lvl / 100.0, preciseMah);
+        return Util.f("≈ %.0f мА·ч (по паспортной ёмкости; реальная — после точного замера)", designMah * lvl / 100.0);
+    }
+
     static String fmtTime(long ms) {
         return DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date(ms));
     }
@@ -152,10 +159,48 @@ public class BatteryPage implements Page {
         try {
             double[] r = BatteryMeter.read(ctx);
             if (r != null && !Double.isNaN(r[3])) recordCurrent(r[3] * curSign);
+            if (r != null) chargeSample(ctx, r);
         } catch (Throwable ignored) { }
         design(ctx);
         if (BatteryWearService.running) return; // службе принадлежит замер
         BatteryMeter.tick(ctx, designCache[0]);
+    }
+
+    /** Точка для теста зарядки (пока приложение открыто). */
+    private static void chargeSample(Context ctx, double[] r) {
+        ChargeLog.load(ctx);
+        Intent b = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        int mv = b == null ? -1 : b.getIntExtra("voltage", -1);
+        double v = mv > 0 ? (mv > 100 ? mv / 1000.0 : mv) : Double.NaN;
+        boolean was = ChargeLog.charging;
+        if (ChargeLog.add(System.currentTimeMillis(), r[0], v, r[3] * curSign, r[2] != 0) || (was && r[2] == 0))
+            ChargeLog.save(ctx);
+    }
+
+    /** Раздел «Тест зарядки»: графики мощности и уровня текущей или последней зарядки. */
+    static void chargeTest(Context ctx, Section out, boolean chargingNow) {
+        ChargeLog.load(ctx);
+        double[] sm = ChargeLog.summary();
+        out.header("Тест зарядки", sm == null ? null : Util.f("%.1f Вт", sm[0]), Section.NORMAL);
+        if (sm == null) {
+            out.note(chargingNow ? "Собираю точки… График появится через минуту."
+                    : "Подключите зарядку — здесь появится график мощности и уровня. В фоне (с закрытым приложением) "
+                    + "точки пишутся, если включено слежение за расходом во вкладке «Энергия».");
+            return;
+        }
+        out.row("Сессия", (chargingNow && ChargeLog.charging ? "идёт · " : "последняя · ")
+                + fmtTime((long) ChargeLog.points.get(0)[0]));
+        out.row("Заряд", Util.f("%.0f → %.0f %% за ", sm[2], sm[3]) + Util.duration(sm[4] / 1000.0));
+        out.chart("Мощность зарядки", Util.f("пик %.1f Вт · средняя %.1f Вт", sm[0], sm[1]),
+                ChargeLog.series(2), 0, Double.NaN, " Вт", Section.NORMAL);
+        out.chart("Уровень заряда", Util.f("%.0f %%", sm[3]), ChargeLog.series(1), 0, 100, "%", Section.OK);
+        out.row("Пиковая мощность", Util.f("%.1f Вт", sm[0]), Section.INFO);
+        out.row("Средняя мощность", Util.f("%.1f Вт", sm[1]));
+        String vd = ChargeLog.verdict(sm[0]);
+        if (vd != null) out.row("Вывод", vd, sm[0] >= 24 ? Section.OK : (sm[0] >= 14 ? Section.NORMAL : Section.WARN));
+        out.note("Мощность измеряется у батареи (напряжение × ток); на блоке она на 10–15 % выше. MagicOS сама снижает "
+                + "мощность после ~80 %, при нагреве и при «умной» зарядке ночью — это нормально."
+                + (spec(Build.MODEL) != null && spec(Build.MODEL).contains("35 Вт") ? " Паспорт модели: 35 Вт." : ""));
     }
 
     /**
@@ -343,13 +388,14 @@ public class BatteryPage implements Page {
         out.header("Состояние", Double.isNaN(lvl) ? null : Util.f("%.0f %%", lvl), Section.NORMAL);
         if (!Double.isNaN(lvl)) out.bar("Уровень заряда", Util.f("%.0f %%", lvl), lvl,
                 lvl <= 15 ? Section.CRIT : (lvl <= 30 ? Section.WARN : Section.OK));
-        boolean haveDesign = designMah > 0 && !Double.isNaN(lvl);
-        if (counterStatic && haveDesign) {
-            out.row("Текущий заряд", Util.f("≈ %.0f мА·ч (уровень × паспортная ёмкость)", designMah * lvl / 100.0), Section.INFO);
-        } else if (!counterStatic && !Double.isNaN(counter)) {
+        PreciseMeter.Result precise = PreciseMeter.last(ctx);
+        // Реальная ёмкость — только по точному замеру; без него — паспортная.
+        double capMah = precise != null ? precise.capacityMah : designMah;
+        boolean haveDesign = capMah > 0 && !Double.isNaN(lvl);
+        if (!counterStatic && !Double.isNaN(counter)) {
             out.row("Текущий заряд", Util.f("%.0f мА·ч (счётчик контроллера)", counter), Section.INFO);
         } else if (haveDesign) {
-            out.row("Текущий заряд", Util.f("≈ %.0f мА·ч (уровень × паспортная ёмкость)", designMah * lvl / 100.0), Section.INFO);
+            out.row("Текущий заряд", chargeText(lvl, precise != null ? precise.capacityMah : Double.NaN, designMah), Section.INFO);
         }
         if (counterStatic && !Double.isNaN(counter))
             out.row("Счётчик контроллера", Util.f("%.0f мА·ч — заглушка прошивки (не меняется)", counter), Section.MUTED);
@@ -406,6 +452,7 @@ public class BatteryPage implements Page {
             else out.row("Скорость зарядки", Util.f("≈ %.0f %%/ч", cr));
         }
         if (valid(energy) && energy > 0) out.row("Энергия", Util.f("%.2f Вт·ч", energy / 1e9));
+        chargeTest(ctx, out, chargingNow);
 
         // --- Ёмкость и износ ---
         out.header("Ёмкость и износ");
@@ -414,15 +461,9 @@ public class BatteryPage implements Page {
         if (!Double.isNaN(fullMah)) {
             out.row("Фактическая ёмкость", Util.f("%.0f мА·ч", fullMah));
             out.row("  источник", "Оценка: счётчик заряда / уровень (" + fccs.size() + " замер.)", Section.MUTED);
-        } else if (counterStatic) {
-            out.row("Фактическая ёмкость", "Не определяется: счётчик контроллера не меняется", Section.MUTED);
-        } else out.row("Фактическая ёмкость", "Нужен заряд ≥ 80 % (оценка по счётчику)", Section.MUTED);
-        List<BatteryMeter.Measurement> meas = BatteryMeter.load(ctx);
-        double measured = BatteryMeter.medianCapacity(meas);
-        if (!Double.isNaN(measured)) {
-            out.row("Измеренная ёмкость", Util.f("%.0f мА·ч (%d %s)", measured, meas.size(), meas.size() == 1 ? "замер" : "замеров"));
-        } else out.row("Измеренная ёмкость", "Пока нет замеров", Section.MUTED);
-        PreciseMeter.Result precise = PreciseMeter.last(ctx);
+        } else if (!counterStatic) out.row("Фактическая ёмкость", "Нужен заряд ≥ 80 % (оценка по счётчику)", Section.MUTED);
+        if (precise == null && !(BatteryWearService.running && BatteryWearService.precise))
+            out.row("Реальная ёмкость", "Нужен точный замер", Section.MUTED);
         if (precise != null) {
             out.row("Точный замер", Util.f("%.0f мА·ч (±%.0f %%, разряд на %d %%)", precise.capacityMah,
                     precise.accuracyPct, precise.delta), Section.OK);
@@ -440,21 +481,17 @@ public class BatteryPage implements Page {
             if (pp[0] > 0 && pp[1] >= PreciseMeter.MIN_DELTA) out.action("precise_finish", "Завершить и посчитать");
             out.action("meter_stop", "Отменить замер");
         } else if (svc) {
-            double[] pr = BatteryMeter.progress();
-            if (pr[0] > 0) out.row("Идёт замер", Util.f("накоплено %.1f мА·ч за %.0f %% (нужно %d %%)", pr[1], pr[2], BatteryMeter.NEED_LEVELS), Section.INFO);
-            out.row("Быстрый замер", "идёт (" + BatteryWearService.runCount + "/" + BatteryWearService.TARGET + ")…", Section.INFO);
+            out.row("Замер", "идёт…", Section.INFO);
             out.action("meter_stop", "Остановить замер");
         } else {
-            double[] pr = BatteryMeter.progress();
-            if (pr[0] > 0) out.row("Идёт замер", Util.f("накоплено %.1f мА·ч за %.0f %% (нужно %d %%)", pr[1], pr[2], BatteryMeter.NEED_LEVELS), Section.INFO);
             String ab = PreciseMeter.lastAbort(ctx);
             if (ab != null) out.row("Последний точный замер", "прерван: " + ab, Section.WARN);
-            out.action("precise_start", "Точный замер (несколько часов)", true);
-            out.action("meter_start", "Быстрый замер (3 × 5 %)");
+            out.action("precise_start", precise == null ? "Точный замер (несколько часов)" : "Повторить точный замер", true);
             out.note("Точный замер: зарядите телефон до 80–100 %, отключите зарядку и нажмите кнопку. Пользуйтесь "
                     + "телефоном как обычно — замер идёт в фоне, пока заряд не снизится на 50 % (или до 10 %). "
                     + "Погрешность ≈ ±4 %. Если подключить зарядку раньше, результат посчитается, когда пройдено "
-                    + "≥ 20 % (≈ ±7 %), иначе замер прервётся. Быстрый замер: ±10–15 %.");
+                    + "≥ 20 % (≈ ±7 %), иначе замер прервётся. Пока идёт замер, телефон не засыпает — батарея "
+                    + "садится немного быстрее обычного, на результат это не влияет.");
         }
         try {
             android.os.PowerManager pm = (android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
@@ -468,11 +505,6 @@ public class BatteryPage implements Page {
             wear = Math.max(0, 100 * (1 - fullMah / designMah));
             healthPct = Math.min(100, 100 * fullMah / designMah);
             src = "счётчик";
-        }
-        if (!Double.isNaN(measured) && designMah > 0) {
-            wear = Math.max(0, Math.min(100, 100 * (1 - measured / designMah)));
-            healthPct = Math.max(0, Math.min(100, 100 * measured / designMah));
-            src = "быстрый замер";
         }
         if (precise != null && designMah > 0) {
             wear = Math.max(0, Math.min(100, 100 * (1 - precise.capacityMah / designMah)));
@@ -493,8 +525,8 @@ public class BatteryPage implements Page {
             out.row("Износ по циклам (ориентир)", Util.f("≈ %.0f %%", cycWear), Section.level(cycWear, 20, 40));
             out.note("Ориентир: обычно ~20 % износа к 800 полным циклам. Точное значение прошивка не отдаёт.");
         }
-        out.note("Быстрый замер идёт отрезками по 5 % — точность ±10–15 %. Точный замер — один длинный разряд, "
-                + "±3–5 %. Здоровье считается по точному замеру, если он есть.");
+        if (Double.isNaN(healthPct))
+            out.note("Здоровье и износ появятся после точного замера (±3–5 %).");
         out.row("Единицы тока", currentUnit(curRaw));
         out.row("Единицы счётчика заряда", flag == 1 ? "мА·ч" : (flag == 0 ? "µA·ч" : "нет данных"));
         out.row("Платформа", magic ? "Honor MagicOS" : "Android");
@@ -543,7 +575,7 @@ public class BatteryPage implements Page {
         else out.row(chargingNow ? "До полной зарядки (оценка)" : "Осталось работы (оценка)", gather, Section.MUTED);
         double avg5 = BatteryMeter.currentAvg(now, BatteryMeter.WIN5_MS);
         if (!chargingNow && haveDesign && !Double.isNaN(avg5) && avg5 < -1) {
-            double remH = designMah * lvl / 100.0 / Math.abs(avg5);
+            double remH = capMah * lvl / 100.0 / Math.abs(avg5);
             out.row("Осталось по текущему расходу", Util.duration(remH * 3600), Section.INFO);
         }
         double dr = BatteryHistory.dischargeRate(history.samples, now);
@@ -562,9 +594,12 @@ public class BatteryPage implements Page {
         } else {
             out.row("Средний ток (5 мин)", Util.f("%.0f мА", Math.abs(avg5)));
             if (volt != null) out.row("Средняя мощность (5 мин)", Util.f("%.2f Вт", volt * Math.abs(avg5) / 1000.0));
-            double mn = Double.MAX_VALUE, mx = -Double.MAX_VALUE;
-            for (double d : p5) { mn = Math.min(mn, Math.abs(d)); mx = Math.max(mx, Math.abs(d)); }
-            out.row("Мин / макс (5 мин)", Util.f("%.0f / %.0f мА", mn, mx));
+            if (p5.size() < 2) out.row("Мин / макс (5 мин)", "Сбор данных…", Section.MUTED);
+            else {
+                double mn = Double.MAX_VALUE, mx = -Double.MAX_VALUE;
+                for (double d : p5) { mn = Math.min(mn, Math.abs(d)); mx = Math.max(mx, Math.abs(d)); }
+                out.row("Мин / макс (5 мин)", Util.f("%.0f / %.0f мА", mn, mx));
+            }
         }
         int grade = BatteryMeter.evennessGrade(BatteryMeter.currentPoints(now, BatteryMeter.WIN10_MS));
         if (grade == 0) out.row("Ровность потребления", "Сбор данных…", Section.MUTED);

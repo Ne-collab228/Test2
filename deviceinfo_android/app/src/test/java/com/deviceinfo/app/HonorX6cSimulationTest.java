@@ -270,7 +270,7 @@ public class HonorX6cSimulationTest {
         Page bp = new BatteryPage();
         bp.tick(ctx); bp.tick(ctx);
         String t = build(bp, ctx).toText();
-        assertTrue(t, t.contains("Измеренная ёмкость"));
+        assertFalse(t, t.contains("Измеренная ёмкость"));
         assertTrue(t, t.contains("[кнопка] Точный замер"));
     }
 

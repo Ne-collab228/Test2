@@ -97,7 +97,9 @@ public class BatteryWearServiceTest {
         Section sec = new Section();
         new BatteryPage().build(ctx, sec);
         String txt = sec.toText();
-        assertTrue(txt, txt.contains("[кнопка] Быстрый замер (3 × 5 %)"));
+        assertFalse(txt, txt.contains("Быстрый замер"));
+        assertTrue(txt, txt.contains("Реальная ёмкость: Нужен точный замер"));
+        assertTrue(txt, txt.contains("реальная — после точного замера"));
         assertTrue(txt, txt.contains("[кнопка] Точный замер (несколько часов)"));
         BatteryWearService.running = true;
         Section sec2 = new Section();

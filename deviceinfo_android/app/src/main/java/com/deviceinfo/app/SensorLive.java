@@ -30,6 +30,17 @@ final class SensorLive {
     private static SensorManager registeredOn;
     private static long startedMs;
 
+    /** Истории для живых графиков (2 минуты, не чаще одной точки в SAMPLE_GAP_MS). */
+    static final Series ACC = new Series(600, 120_000);
+    static final Series LIGHT = new Series(600, 120_000);
+    static final long SAMPLE_GAP_MS = 200;
+    private static long lastAccMs = -1, lastLightMs = -1;
+
+    /** Пора ли добавлять новую точку (прореживание). */
+    static boolean due(long lastMs, long nowMs, long gapMs) { return lastMs < 0 || nowMs - lastMs >= gapMs || nowMs < lastMs; }
+
+    static void clearSeries() { ACC.clear(); LIGHT.clear(); lastAccMs = -1; lastLightMs = -1; }
+
     static String key(Sensor s) { return s.getName() + "#" + s.getType(); }
 
     static boolean oneShot(Sensor s) {
@@ -49,6 +60,12 @@ final class SensorLive {
             }
             long now = SystemClock.elapsedRealtime();
             r.values = e.values.clone();
+            int ty = e.sensor.getType();
+            if (ty == Sensor.TYPE_ACCELEROMETER && due(lastAccMs, now, SAMPLE_GAP_MS)) {
+                lastAccMs = now; ACC.add(now, mag(r.values));
+            } else if (ty == Sensor.TYPE_LIGHT && due(lastLightMs, now, SAMPLE_GAP_MS)) {
+                lastLightMs = now; LIGHT.add(now, r.values[0]);
+            }
             r.lastMs = now;
             r.count++;
             if (r.winStartMs == 0) { r.winStartMs = now; r.winCount = 0; }
@@ -86,6 +103,7 @@ final class SensorLive {
         thread = null;
         registeredOn = null;
         READINGS.clear();
+        clearSeries();
     }
 
     static boolean permissionMissing(Context ctx, int type) {
@@ -107,7 +125,7 @@ final class SensorLive {
         }
     }
 
-    private static double mag(float[] v) {
+    static double mag(float[] v) {
         double s = 0;
         int n = Math.min(3, v.length);
         for (int i = 0; i < n; i++) s += v[i] * v[i];

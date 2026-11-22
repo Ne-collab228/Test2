@@ -185,6 +185,7 @@ public class MainActivity extends Activity {
         if (p instanceof CpuPage) return R.drawable.ic_cpu;
         if (p instanceof GpuPage) return R.drawable.ic_gpu;
         if (p instanceof BatteryPage) return R.drawable.ic_battery;
+        if (p instanceof EnergyPage) return R.drawable.ic_energy;
         if (p instanceof DisplayPage) return R.drawable.ic_display;
         if (p instanceof MemoryPage) return R.drawable.ic_memory;
         if (p instanceof ThermalPage) return R.drawable.ic_thermo;
@@ -321,6 +322,23 @@ public class MainActivity extends Activity {
             try {
                 startService(new Intent(this, BatteryWearService.class).setAction(BatteryWearService.ACTION_STOP));
             } catch (Throwable ignored) { }
+        } else if ("energy_start".equals(id)) {
+            if (Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                try { requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2); } catch (Throwable ignored) { }
+            }
+            EnergyService.start(this);
+        } else if ("energy_stop".equals(id)) {
+            EnergyService.stop(this);
+        } else if ("energy_reset".equals(id)) {
+            new android.app.AlertDialog.Builder(this, dialogTheme()).setTitle("Сбросить статистику расхода?")
+                    .setMessage("Накопленные данные о расходе с экраном выключенным и включённым будут удалены.")
+                    .setPositiveButton("Сбросить", (d, w) -> {
+                        EnergyStats.reset(this);
+                        if (EnergyService.running) EnergyService.stats = new EnergyStats();
+                        refresh();
+                    })
+                    .setNegativeButton("Отмена", null).show();
         } else if ("battery_opt".equals(id)) {
             try {
                 startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -750,6 +768,17 @@ public class MainActivity extends Activity {
         hint.setPadding(0, dp(6), 0, 0);
         box.addView(hint);
 
+        box.addView(settingsTitle("Плавающее окно"));
+        final android.widget.Switch ov = new android.widget.Switch(this);
+        ov.setText("Плавающее окно поверх игр");
+        ov.setTextColor(th.text);
+        ov.setChecked(OverlayService.running);
+        ov.setOnCheckedChangeListener((b, on) -> { if (b.isPressed()) setOverlay(on, ov); });
+        box.addView(ov);
+        TextView ovHint = text("заряд, ток, температура, частота ядер", th.muted, 12);
+        ovHint.setPadding(0, dp(4), 0, 0);
+        box.addView(ovHint);
+
         box.addView(settingsTitle("Отчёт"));
         final android.widget.Switch auto = new android.widget.Switch(this);
         auto.setText("Загружать отчёт в GitHub после обновления");
@@ -777,6 +806,36 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Отмена", null)
                 .show();
+    }
+
+    /** Включить/выключить плавающее окно; без разрешения «Поверх других окон» ведёт в системные настройки. */
+    void setOverlay(boolean on, android.widget.Switch sw) {
+        final android.content.SharedPreferences op = getSharedPreferences(OverlayService.PREFS, MODE_PRIVATE);
+        if (!on) {
+            op.edit().putBoolean("enabled", false).apply();
+            stopService(new Intent(this, OverlayService.class));
+            return;
+        }
+        op.edit().putBoolean("enabled", true).apply();
+        if (android.provider.Settings.canDrawOverlays(this)) { startOverlay(); return; }
+        sw.setChecked(false);
+        new android.app.AlertDialog.Builder(this, dialogTheme())
+                .setTitle("Нужно разрешение")
+                .setMessage("Чтобы показывать окно поверх игр, разрешите приложению «Поверх других окон». "
+                        + "Откроются системные настройки: включите переключатель и вернитесь в приложение.")
+                .setPositiveButton("Открыть настройки", (d, w) -> {
+                    try {
+                        startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                android.net.Uri.parse("package:" + getPackageName())));
+                    } catch (Throwable e) { toastStatus("Не удалось открыть настройки: " + e.getMessage()); }
+                })
+                .setNegativeButton("Отмена", (d, w) -> op.edit().putBoolean("enabled", false).apply())
+                .show();
+    }
+
+    void startOverlay() {
+        try { startForegroundService(new Intent(this, OverlayService.class)); }
+        catch (Throwable e) { toastStatus("Не удалось включить окно: " + e.getMessage()); }
     }
 
     /** Кнопка-переключатель в настройках: одна строка, без лишних отступов. */
@@ -999,6 +1058,8 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (!OverlayService.running && getSharedPreferences(OverlayService.PREFS, MODE_PRIVATE).getBoolean("enabled", false)
+                && android.provider.Settings.canDrawOverlays(this)) startOverlay();
         ui.removeCallbacks(tick);
         ui.post(tick);
     }
