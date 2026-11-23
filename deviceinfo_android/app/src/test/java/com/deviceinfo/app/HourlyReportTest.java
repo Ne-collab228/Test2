@@ -39,7 +39,7 @@ public class HourlyReportTest {
         assertTrue(t, t.contains("часовой отчёт"));
         assertTrue(t, t.contains("Заряд: 80 % → 76 % (-4 %)"));
         assertTrue(t, t.contains("экран выкл · 78 %"));
-        assertTrue(t, t.contains("играет музыка · 77 %"));
+        assertTrue(t, t.contains("играет звук · 77 %"));
         assertTrue(t, t.contains("в среднем 600 мА, от 500 до 700 мА (2 замеров)"));
         assertTrue(t, t.contains("Загрузка CPU: в среднем 30 %, макс 40 %"));
         assertTrue(t, t.contains("30.5–32.0 °C"));
@@ -98,7 +98,7 @@ public class HourlyReportTest {
         catch (Exception e) { throw new RuntimeException(e); }
         HourlyReport.load(ctx, null);
         assertEquals(now - 20 * M, HourlyReport.startWall);
-        assertEquals(1, HourlyReport.events.size());
+        assertEquals(2, HourlyReport.events.size());                     // + «служба перезапущена»
         assertEquals(1, HourlyReport.n);
         assertEquals(400, HourlyReport.sumMa, 1e-6);
     }
@@ -128,5 +128,84 @@ public class HourlyReportTest {
         assertNotNull(org.robolectric.Shadows.shadowOf(am).getNextScheduledAlarm());
         HourlyReport.cancel(ctx);
         assertNull(org.robolectric.Shadows.shadowOf(am).getNextScheduledAlarm());
+    }
+
+    /** Время на зарядке (с экраном и без) и предупреждение о малом числе замеров. */
+    @Test public void chargeSpansAndLowSamples() {
+        HourlyReport.reset();
+        long w0 = 1_700_000_000_000L;
+        HourlyReport.begin(null, w0, 0, 0, 50);
+        HourlyReport.event(w0, 50, true, false, false, 30);              // экран вкл
+        HourlyReport.event(w0 + 10 * M, 48, true, true, false, 30);      // зарядка, экран вкл
+        HourlyReport.event(w0 + 20 * M, 52, false, true, false, 30);     // экран выкл на зарядке
+        HourlyReport.event(w0 + 50 * M, 60, false, false, false, 30);    // зарядку сняли
+        long[] sp = HourlyReport.spans(w0 + H);
+        assertEquals(20 * M, sp[0]);   // экран вкл: 0–20 мин
+        assertEquals(40 * M, sp[1]);   // на зарядке: 10–50 мин
+        assertEquals(10 * M, sp[2]);   // на зарядке с экраном: 10–20 мин
+        String t = HourlyReport.text(null, "9.9", w0 + H, 0, 0, 60);
+        assertTrue(t, t.contains("На зарядке: 40 мин 0 с (экран вкл 10 мин 0 с / выкл 30 мин 0 с)"));
+        // 20 мин экрана = ~120 замеров ожидается, было 5
+        for (int i = 0; i < 5; i++) HourlyReport.sample(500, Double.NaN, Double.NaN);
+        assertNotNull(HourlyReport.lowSamples(w0 + H));
+        assertTrue(HourlyReport.text(null, "9.9", w0 + H, 0, 0, 60).contains("замеров мало (5 из ~120)"));
+        for (int i = 0; i < 100; i++) HourlyReport.sample(500, Double.NaN, Double.NaN);
+        assertNull(HourlyReport.lowSamples(w0 + H));
+    }
+
+    /** После перезапуска службы состояние не записывается заново — одна строка «перезапущена». */
+    @Test public void restartNoDuplicateEvents() throws Exception {
+        Context ctx = RuntimeEnvironment.getApplication();
+        HourlyReport.reset();
+        long now = System.currentTimeMillis();
+        HourlyReport.begin(null, now - 20 * M, 0, 0, 70);
+        HourlyReport.event(now - 15 * M, 70, true, true, true, 30);
+        assertEquals(3, HourlyReport.events.size());                      // экран, зарядка, звук
+        HourlyReport.save(ctx);
+        HourlyReport.reset();
+        java.lang.reflect.Field f = HourlyReport.class.getDeclaredField("loaded");
+        f.setAccessible(true); f.setBoolean(null, false);
+        HourlyReport.load(ctx, null);
+        assertEquals(4, HourlyReport.events.size());
+        assertTrue(HourlyReport.events.get(3).endsWith("служба слежения перезапущена"));
+        HourlyReport.event(now, 70, true, true, true, 30);                // то же состояние — без новых строк
+        assertEquals(4, HourlyReport.events.size());
+        prefsClear(ctx);
+    }
+
+    /** Отчёт после неудачных отправок говорит, с какого времени не отправлялось; 100 % — расход не виден. */
+    @Test public void failedPeriodAndFullCharge() {
+        HourlyReport.reset();
+        long w0 = 1_700_000_000_000L;
+        HourlyReport.begin(null, w0, 0, 0, 100);
+        HourlyReport.failSince = w0 + H;
+        HourlyReport.failErr = "нет связи с GitHub";
+        String t = HourlyReport.text(null, "9.9", w0 + 4 * H, 0, 0, 100);
+        assertTrue(t, t.contains("Не удавалось отправить с "));
+        assertTrue(t, t.contains("(нет связи с GitHub) — здесь весь период"));
+        assertTrue(t, t.contains("Заряд держался на 100 %"));
+        HourlyReport.reset();
+        assertFalse(HourlyReport.text(null, "9.9", w0 + H, 0, 0, 90).contains("Не удавалось"));
+    }
+
+    /** Долгий простой целиком на 100 % помечается. */
+    @Test public void lastNightAtFullMarked() {
+        Context ctx = RuntimeEnvironment.getApplication();
+        EnergyStats.reset(ctx);
+        EnergyStats e = new EnergyStats();
+        e.event(0, 0, 1, 100, false, false, false);
+        e.event(4 * H, 20 * M, 2, 100, true, false, false);
+        assertEquals(100, e.lastNight[4], 1e-9);
+        e.save(ctx);
+        EnergyStats l = EnergyStats.load(ctx);
+        assertEquals(100, l.lastNight[4], 1e-6);
+        Section sec = new Section();
+        new EnergyPage().build(ctx, sec);
+        assertTrue(sec.toText(), sec.toText().contains("весь простой на 100 % — расход по процентам не виден"));
+        EnergyStats.reset(ctx);
+    }
+
+    private static void prefsClear(Context ctx) {
+        ctx.getSharedPreferences(HourlyReport.PREFS, Context.MODE_PRIVATE).edit().clear().commit();
     }
 }

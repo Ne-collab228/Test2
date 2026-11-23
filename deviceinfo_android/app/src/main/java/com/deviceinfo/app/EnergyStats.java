@@ -48,7 +48,7 @@ public final class EnergyStats {
     /** Длинные (от LONG_MS) отрезки простоя без звука и замеров: длительность и время бодрствования. */
     long longOffMs, longOffAwakeMs;
     Segment open;
-    /** Последний долгий простой: {начало (wall), длительность мс, ушло %, доля бодрствования}. */
+    /** Последний долгий простой: {начало (wall), длительность мс, ушло %, доля бодрствования, уровень в начале}. */
     double[] lastNight;
     long since;
 
@@ -95,7 +95,7 @@ public final class EnergyStats {
             if (s.audio) add(offAudio, dt, used, awake);
             else {
                 add(off, dt, used, awake);
-                if (dt >= NIGHT_MS) lastNight = new double[]{s.startWall, dt, used, awake / (double) dt};
+                if (dt >= NIGHT_MS) lastNight = new double[]{s.startWall, dt, used, awake / (double) dt, s.startLevel};
                 if (dt >= LONG_MS) { longOffMs += dt; longOffAwakeMs += awake; }
             }
         }
@@ -191,7 +191,7 @@ public final class EnergyStats {
             e.longOffMs = p.getLong("long_ms", 0); e.longOffAwakeMs = p.getLong("long_awake", 0);
             if (p.contains("night_t"))
                 e.lastNight = new double[]{p.getLong("night_t", 0), p.getLong("night_ms", 0),
-                        p.getFloat("night_pct", 0), p.getFloat("night_awake", 0)};
+                        p.getFloat("night_pct", 0), p.getFloat("night_awake", 0), p.getFloat("night_lvl", Float.NaN)};
             if (p.contains("seg_el")) {
                 Segment s = new Segment();
                 s.screenOn = p.getBoolean("seg_on", false);
@@ -217,7 +217,8 @@ public final class EnergyStats {
             write(ed, "off", off); write(ed, "on", on); write(ed, "offa", offAudio);
             ed.putLong("long_ms", longOffMs).putLong("long_awake", longOffAwakeMs);
             if (lastNight != null) ed.putLong("night_t", (long) lastNight[0]).putLong("night_ms", (long) lastNight[1])
-                    .putFloat("night_pct", (float) lastNight[2]).putFloat("night_awake", (float) lastNight[3]);
+                    .putFloat("night_pct", (float) lastNight[2]).putFloat("night_awake", (float) lastNight[3])
+                    .putFloat("night_lvl", lastNight.length > 4 ? (float) lastNight[4] : Float.NaN);
             if (open != null) ed.putBoolean("seg_on", open.screenOn).putLong("seg_el", open.startElapsed)
                     .putLong("seg_up", open.startUptime).putLong("seg_wall", open.startWall)
                     .putFloat("seg_lvl", (float) open.startLevel).putFloat("seg_min", (float) open.minLevel)

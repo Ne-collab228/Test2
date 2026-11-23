@@ -68,7 +68,7 @@ public class SensorIdleTest {
         Section sec = new Section();
         new EnergyPage().build(ctx, sec);
         String t = sec.toText();
-        assertTrue(t, t.contains("Экран выключен, играла музыка"));
+        assertTrue(t, t.contains("Экран выключен, играл звук"));
         assertTrue(t, t.contains("Глубокий сон в простое"));
         assertTrue(t, t.contains("90 %"));                         // 18 мин бодрствования за 3 ч
         assertTrue(t, t.contains("Отлично"));

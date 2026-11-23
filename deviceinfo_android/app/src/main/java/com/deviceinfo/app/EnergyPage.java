@@ -55,6 +55,8 @@ public class EnergyPage implements Page {
             else if (!HourlyReport.enabled(ctx)) out.row("Отчёты в GitHub", "выключены в настройках", Section.MUTED);
             else {
                 out.row("Отчёты в GitHub", "каждый час · " + HourlyReport.status(ctx));
+                String low = HourlyReport.lowSamples(System.currentTimeMillis());
+                if (low != null) out.row("Внимание", low, Section.WARN);
                 out.action("hourly_now", "Отправить часовой отчёт сейчас");
             }
         } else {
@@ -94,7 +96,8 @@ public class EnergyPage implements Page {
             double rate = n[2] / (n[1] / 3600_000.0);
             out.row("Последний долгий простой", new java.text.SimpleDateFormat("dd.MM HH:mm", java.util.Locale.US)
                     .format(new java.util.Date((long) n[0])) + " · " + Util.duration(n[1] / 1000.0)
-                    + Util.f(" · −%.0f %% (%.1f %%/ч) · сон %.0f %%", n[2], rate, 100 * (1 - n[3])));
+                    + Util.f(" · −%.0f %% (%.1f %%/ч) · сон %.0f %%", n[2], rate, 100 * (1 - n[3]))
+                    + (n.length > 4 && n[4] >= 99.5 && n[2] < 0.5 ? " · весь простой на 100 % — расход по процентам не виден" : ""));
         }
         out.note("Норма для простоя: до ~1 %/ч (телефон почти всё время в глубоком сне). Если расход выше 3 %/ч или "
                 + "сон ниже 30 % — какое-то приложение будит телефон: проверьте Настройки → Батарея → Потребление.");
@@ -104,14 +107,14 @@ public class EnergyPage implements Page {
         long auOpen = on ? s.openAudioMs(el) : 0;
         if (au.ms > 0 || auOpen > 0) {
             double auR = au.ms >= 30 * 60_000L && au.pct >= 2 ? au.rate() : Double.NaN;
-            out.header("Экран выключен, играла музыка", Double.isNaN(auR) ? null : Util.f("%.1f %%/ч", auR), Section.NORMAL);
+            out.header("Экран выключен, играл звук", Double.isNaN(auR) ? null : Util.f("%.1f %%/ч", auR), Section.NORMAL);
             out.row("Накоплено", Util.duration(au.ms / 1000.0) + Util.f(" · ушло %.0f %%", au.pct));
-            if (auOpen > 0) out.row("  сейчас", "играет музыка " + Util.duration(auOpen / 1000.0), Section.MUTED);
+            if (auOpen > 0) out.row("  сейчас", "играет звук " + Util.duration(auOpen / 1000.0), Section.MUTED);
             if (!Double.isNaN(auR)) {
                 double ma = EnergyStats.ma(auR, cap);
                 out.row("Расход", Util.f("%.1f %%/ч", auR) + (Double.isNaN(ma) ? "" : Util.f(" ≈ %.0f мА", ma)));
             }
-            out.note("Музыка (в том числе по Bluetooth) не даёт телефону уснуть, поэтому это время в простой не входит "
+            out.note("Звук (музыка, видео, в том числе по Bluetooth) не даёт телефону уснуть, поэтому это время в простой не входит "
                     + "и на оценку не влияет.");
         }
 

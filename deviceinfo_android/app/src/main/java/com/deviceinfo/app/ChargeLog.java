@@ -15,6 +15,8 @@ public final class ChargeLog {
     static final String PREFS = "charge_log";
     static final int MAX = 720;
     static final long MIN_STEP_MS = 20_000;
+    /** Сессия моложе этого считается продолжающейся (как в load()). */
+    static final long RECENT_MS = 10 * 60_000L;
 
     /** Точка: {время мс, уровень %, мощность Вт, ток мА}. */
     static final List<double[]> points = new ArrayList<>();
@@ -29,7 +31,14 @@ public final class ChargeLog {
     static synchronized boolean add(long wallMs, double level, double volts, double ma, boolean plugged) {
         if (!plugged) { charging = false; return false; }
         if (!charging) {
-            charging = true; startMs = wallMs; points.clear();
+            charging = true;
+            // короткий сбой «отключено» (пауза умной зарядки, дребезг статуса) — сессия продолжается
+            boolean recent = false;
+            if (!points.isEmpty()) {
+                double[] lp = points.get(points.size() - 1);
+                recent = wallMs - (long) lp[0] < RECENT_MS && wallMs >= (long) lp[0] && level >= lp[1] - 2;
+            }
+            if (!recent) { startMs = wallMs; points.clear(); }
         }
         double w = Double.isNaN(volts) || Double.isNaN(ma) ? Double.NaN : volts * ma / 1000.0;
         if (!points.isEmpty()) {
@@ -56,14 +65,14 @@ public final class ChargeLog {
             sum += w; n++;
             if (i > 0 && i < points.size() - 1) {
                 double a = points.get(i - 1)[2], b = points.get(i + 1)[2];
-                if (!Double.isNaN(a) && !Double.isNaN(b)) {
+                if (!Double.isNaN(a) && a > 0 && !Double.isNaN(b) && b > 0) {
                     double m = Math.max(Math.min(a, w), Math.min(Math.max(a, w), b));
                     if (Double.isNaN(peak) || m > peak) peak = m;
                 }
             }
         }
         if (n == 0) return null;
-        if (Double.isNaN(peak)) peak = sum / n;
+        if (Double.isNaN(peak) || peak <= 0) peak = sum / n;
         double[] f = points.get(0), l = points.get(points.size() - 1);
         return new double[]{peak, sum / n, f[1], l[1], l[0] - f[0], points.size()};
     }
@@ -96,7 +105,7 @@ public final class ChargeLog {
             }
             startMs = p.getLong("start", 0);
             // зарядка продолжается после перезапуска приложения — не начинать сессию заново
-            if (!points.isEmpty() && System.currentTimeMillis() - (long) points.get(points.size() - 1)[0] < 10 * 60_000L)
+            if (!points.isEmpty() && System.currentTimeMillis() - (long) points.get(points.size() - 1)[0] < RECENT_MS)
                 charging = true;
         } catch (Throwable ignored) { }
     }

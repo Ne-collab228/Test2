@@ -50,6 +50,13 @@ public final class HourlyReport {
     static double minT = Double.NaN, maxT = Double.NaN;
     private static Boolean lastScreen, lastPlugged, lastAudio;
     private static boolean loaded;
+    /** Время последнего события и накопленное за период: экран включён, на зарядке, на зарядке с экраном. */
+    static long lastEvWall, screenMs, chargeMs, chargeOnMs;
+    /** Сколько раз за период служба делала замер при включённом экране (раз в 10 с). */
+    static int ticks;
+    /** С какого времени не удаётся отправить отчёт (0 — отправляется) и последняя ошибка. */
+    static long failSince;
+    static String failErr;
 
     static boolean enabled(Context c) {
         return c.getSharedPreferences(MainActivity.GH, Context.MODE_PRIVATE).getBoolean(PREF_ON, true);
@@ -69,6 +76,28 @@ public final class HourlyReport {
         n = 0; sumMa = 0; minMa = Double.NaN; maxMa = Double.NaN;
         nLoad = 0; sumLoad = 0; maxLoad = Double.NaN;
         minT = Double.NaN; maxT = Double.NaN;
+        screenMs = 0; chargeMs = 0; chargeOnMs = 0; ticks = 0;
+        lastEvWall = wall;
+    }
+
+    /** Накопленное {экран вкл, на зарядке, на зарядке с экраном} до момента wall (с идущим промежутком). */
+    static synchronized long[] spans(long wall) {
+        long sc = screenMs, ch = chargeMs, co = chargeOnMs;
+        long dt = lastEvWall > 0 && wall > lastEvWall ? wall - lastEvWall : 0;
+        if (Boolean.TRUE.equals(lastScreen)) sc += dt;
+        if (Boolean.TRUE.equals(lastPlugged)) { ch += dt; if (Boolean.TRUE.equals(lastScreen)) co += dt; }
+        return new long[]{sc, ch, co};
+    }
+
+    /**
+     * Предупреждение, если замеров при включённом экране намного меньше ожидаемого (раз в 10 с) —
+     * значит, система приостанавливала приложение. null — всё в порядке.
+     */
+    static synchronized String lowSamples(long wall) {
+        long expected = spans(wall)[0] / 10_000;
+        if (expected < 30 || ticks >= expected * 0.3) return null;
+        return Util.f("замеров мало (%d из ~%d): похоже, система приостанавливала приложение (режим экономии?). "
+                + "Помогает: Настройки → Батарея → Запуск приложений → Device Info → вручную, включить работу в фоне.", ticks, expected);
     }
 
     private static String hm(long wall) { return new SimpleDateFormat("HH:mm", Locale.US).format(new Date(wall)); }
@@ -83,12 +112,15 @@ public final class HourlyReport {
         if (startWall == 0) startWall = wall;
         if (Double.isNaN(startLevel)) startLevel = lvl;
         temp(tempC);
+        long[] sp = spans(wall);
+        screenMs = sp[0]; chargeMs = sp[1]; chargeOnMs = sp[2];
+        if (wall > lastEvWall) lastEvWall = wall;
         if (lastScreen == null || lastScreen != screen) ev(wall, screen ? "экран вкл" : "экран выкл", lvl);
         if (lastPlugged == null || lastPlugged != plugged) {
             if (lastPlugged != null || plugged) ev(wall, plugged ? "зарядка подключена" : "зарядка отключена", lvl);
         }
         if (lastAudio == null || lastAudio != audio) {
-            if (lastAudio != null || audio) ev(wall, audio ? "играет музыка" : "музыка выкл", lvl);
+            if (lastAudio != null || audio) ev(wall, audio ? "играет звук" : "звук выкл", lvl);
         }
         lastScreen = screen; lastPlugged = plugged; lastAudio = audio;
     }
@@ -101,6 +133,7 @@ public final class HourlyReport {
 
     /** Замер при включённом экране (раз в 10 с): ток разряда мА, загрузка CPU %, температура °C. */
     static synchronized void sample(double drainMa, double loadPct, double tempC) {
+        ticks++;
         if (!Double.isNaN(drainMa) && drainMa > 0 && drainMa < 8000) {
             n++; sumMa += drainMa;
             minMa = Double.isNaN(minMa) ? drainMa : Math.min(minMa, drainMa);
@@ -143,6 +176,11 @@ public final class HourlyReport {
         sb.append("Период: ").append(fmtPeriod(from, wall)).append('\n');
         if (!Double.isNaN(startLevel) && !Double.isNaN(lvl))
             sb.append(Util.f("Заряд: %.0f %% → %.0f %% (%+.0f %%)\n", startLevel, lvl, lvl - startLevel));
+        if (startLevel >= 99.5 && lvl >= 99.5)
+            sb.append("  Заряд держался на 100 % — расход по процентам не виден (после зарядки Honor какое-то время показывает 100 %).\n");
+        if (failSince > 0)
+            sb.append("Не удавалось отправить с ").append(hm(failSince)).append(failErr != null ? " (" + failErr + ")" : "")
+                    .append(" — здесь весь период\n");
         if (s != null) {
             double[] now = snapshot(s, el, upt, lvl);
             double[] b0 = base != null && base.length == now.length ? base : new double[now.length];
@@ -155,13 +193,19 @@ public final class HourlyReport {
             if (offMs >= 30 * 60_000) sb.append(Util.f(" (≈ %.1f %%/ч)", offPct / (offMs / 3600_000.0)));
             sb.append('\n');
             if (offMs >= 5 * 60_000) sb.append(Util.f("Процессор спал: %.0f %% времени\n", 100 * (1 - Math.min(1, offAw / offMs))));
-            if (auMs > 0) sb.append("Играла музыка: ").append(Util.duration(auMs / 1000.0))
+            if (auMs > 0) sb.append("Играл звук (музыка, видео): ").append(Util.duration(auMs / 1000.0))
                     .append(Util.f(" · ушло %.0f %% (в простой не входит)\n", auPct));
             sb.append("\n[Экран включён]\n");
             sb.append("Время: ").append(Util.duration(onMs / 1000.0)).append(Util.f(" · ушло %.0f %%", onPct));
             if (onMs >= 10 * 60_000) sb.append(Util.f(" (≈ %.0f %%/ч)", onPct / (onMs / 3600_000.0)));
             sb.append('\n');
         }
+        long[] sp = spans(wall);
+        if (sp[1] > 0) sb.append("\nНа зарядке: ").append(Util.duration(sp[1] / 1000.0))
+                .append(" (экран вкл ").append(Util.duration(sp[2] / 1000.0)).append(" / выкл ")
+                .append(Util.duration(Math.max(0, sp[1] - sp[2]) / 1000.0)).append(") — в расход выше не входит\n");
+        String low = lowSamples(wall);
+        if (low != null) sb.append("Внимание: ").append(low).append('\n');
         if (n > 0) sb.append(Util.f("Ток: в среднем %.0f мА, от %.0f до %.0f мА (%d замеров)\n", sumMa / n, minMa, maxMa, n));
         if (nLoad > 0) sb.append(Util.f("Загрузка CPU: в среднем %.0f %%, макс %.0f %%\n", sumLoad / nLoad, maxLoad));
         if (!Double.isNaN(minT)) sb.append(Util.f("\nТемпература батареи: %.1f–%.1f °C\n", minT, maxT));
@@ -187,7 +231,7 @@ public final class HourlyReport {
                     : Util.f("%.1f %%/ч", onR)).append('\n');
             sb.append("Глубокий сон: ").append(Double.isNaN(sl) ? "сбор данных"
                     : Util.f("%.0f %% · %s", sl * 100, EnergyPage.SLEEP[EnergyStats.sleepGrade(sl)])).append('\n');
-            if (s.offAudio.ms > 0) sb.append("Музыка при выключенном экране: ").append(Util.duration(s.offAudio.ms / 1000.0))
+            if (s.offAudio.ms > 0) sb.append("Звук при выключенном экране: ").append(Util.duration(s.offAudio.ms / 1000.0))
                     .append(Util.f(" · ушло %.0f %%\n", s.offAudio.pct));
         }
         return sb.toString();
@@ -275,8 +319,12 @@ public final class HourlyReport {
             SharedPreferences.Editor ed = prefs(ctx).edit();
             if (err == null) {
                 begin(s, wall, el, upt, lvl);
-                ed.putLong("last_ok", wall).remove("last_err");
-            } else ed.putString("last_err", hm(wall) + " " + err);
+                synchronized (HourlyReport.class) { failSince = 0; failErr = null; }
+                prefs(ctx).edit().putLong("last_ok", wall).remove("last_err").commit(); // до суточного — он это показывает
+            } else {
+                synchronized (HourlyReport.class) { if (failSince == 0) failSince = wall; failErr = err.length() > 80 ? err.substring(0, 80) + "…" : err; }
+                ed.putString("last_err", hm(wall) + " " + err);
+            }
             long lastDaily = prefs(ctx).getLong("last_daily", 0);
             if (err == null && (wall - lastDaily >= DAY_MS - 30 * 60_000L || wall < lastDaily)) {
                 String e2 = push(token, repo, branch, "daily", ts + "_v" + version + ".txt.gz", gzip(fullText(ctx, version)),
@@ -348,15 +396,26 @@ public final class HourlyReport {
                     .putString("events", ev.toString()).putString("base", b.toString())
                     .putInt("n", n).putFloat("sum_ma", (float) sumMa).putFloat("min_ma", (float) minMa).putFloat("max_ma", (float) maxMa)
                     .putInt("n_load", nLoad).putFloat("sum_load", (float) sumLoad).putFloat("max_load", (float) maxLoad)
-                    .putFloat("min_t", (float) minT).putFloat("max_t", (float) maxT).apply();
+                    .putFloat("min_t", (float) minT).putFloat("max_t", (float) maxT)
+                    .putLong("last_ev", lastEvWall).putLong("scr_ms", screenMs).putLong("chg_ms", chargeMs).putLong("chg_on_ms", chargeOnMs)
+                    .putInt("ticks", ticks).putLong("fail_since", failSince).putString("fail_err", failErr)
+                    .putInt("ls", tri(lastScreen)).putInt("lp", tri(lastPlugged)).putInt("la", tri(lastAudio)).apply();
         } catch (Throwable ignored) { }
     }
+
+    private static int tri(Boolean b) { return b == null ? -1 : (b ? 1 : 0); }
+
+    private static Boolean untri(int v) { return v < 0 ? null : v == 1; }
 
     static synchronized void load(Context ctx, EnergyStats s) {
         if (loaded) return;
         loaded = true;
         try {
             SharedPreferences p = prefs(ctx);
+            // последнее известное состояние — чтобы после перезапуска службы (обновление приложения)
+            // не записывать заново «экран вкл / зарядка / звук»
+            lastScreen = untri(p.getInt("ls", -1)); lastPlugged = untri(p.getInt("lp", -1)); lastAudio = untri(p.getInt("la", -1));
+            failSince = p.getLong("fail_since", 0); failErr = p.getString("fail_err", null);
             if (!p.contains("start") || System.currentTimeMillis() - p.getLong("start", 0) > 3 * 3600_000L) {
                 long el = SystemClock.elapsedRealtime();
                 double[] r = BatteryMeter.read(ctx);
@@ -373,6 +432,9 @@ public final class HourlyReport {
             n = p.getInt("n", 0); sumMa = p.getFloat("sum_ma", 0); minMa = p.getFloat("min_ma", Float.NaN); maxMa = p.getFloat("max_ma", Float.NaN);
             nLoad = p.getInt("n_load", 0); sumLoad = p.getFloat("sum_load", 0); maxLoad = p.getFloat("max_load", Float.NaN);
             minT = p.getFloat("min_t", Float.NaN); maxT = p.getFloat("max_t", Float.NaN);
+            lastEvWall = p.getLong("last_ev", startWall); screenMs = p.getLong("scr_ms", 0);
+            chargeMs = p.getLong("chg_ms", 0); chargeOnMs = p.getLong("chg_on_ms", 0); ticks = p.getInt("ticks", 0);
+            if (lastScreen != null) ev(System.currentTimeMillis(), "служба слежения перезапущена", Double.NaN);
         } catch (Throwable ignored) { }
     }
 
@@ -380,5 +442,6 @@ public final class HourlyReport {
     static synchronized void reset() {
         begin(null, 0, 0, 0, Double.NaN);
         startWall = 0; lastScreen = null; lastPlugged = null; lastAudio = null; loaded = true;
+        lastEvWall = 0; failSince = 0; failErr = null;
     }
 }

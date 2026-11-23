@@ -84,7 +84,10 @@ public class EnergyTest {
         assertTrue(ChargeLog.verdict(9).startsWith("обычная"));
         ChargeLog.add(100_000, 33, 4.2, -300, false);             // отключили — сессия сохранена
         assertEquals(4, ChargeLog.points.size());
-        ChargeLog.add(200_000, 40, 4.0, 3000, true);              // новая зарядка — новая сессия
+        ChargeLog.add(200_000, 33, 4.0, 3000, true);              // через 100 с снова — та же сессия
+        assertEquals(5, ChargeLog.points.size());
+        ChargeLog.add(300_000, 33, 4.2, -300, false);
+        ChargeLog.add(300_000 + 11 * 60_000, 30, 4.0, 3000, true); // через 11 мин — новая сессия
         assertEquals(1, ChargeLog.points.size());
         ChargeLog.reset();
     }
