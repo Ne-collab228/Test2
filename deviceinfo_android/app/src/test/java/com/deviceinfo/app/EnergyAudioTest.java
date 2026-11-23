@@ -30,18 +30,42 @@ public class EnergyAudioTest {
         assertEquals(0, e.longOffMs);
     }
 
-    @Test public void audioFlagSetMidSegment() {
+    @Test public void shortAudioDoesNotMakeAudioSegment() {
         EnergyStats e = new EnergyStats();
         e.event(T, UP, 1, 90, false, false, false, false);
-        assertFalse(e.open.audio);
+        assertFalse(e.open.lastAudio);
         e.event(T + 20 * M, UP + M, 2, 90, false, false, false, true);
-        assertTrue(e.open.audio);
-        e.event(T + 40 * M, UP + 2 * M, 3, 90, false, false, false, false); // флаг не сбрасывается
-        assertTrue(e.open.audio);
+        assertTrue(e.open.lastAudio);
+        e.event(T + 40 * M, UP + 2 * M, 3, 90, false, false, false, false);
+        assertEquals(20 * M, e.open.audioMs(T + H));
         e.event(T + H, UP + 3 * M, 4, 90, true, false, false, false);
-        assertEquals(0, e.off.ms);
+        assertEquals(H, e.off.ms);            // звук 20 из 60 мин — обычный простой
+        assertEquals(0, e.offAudio.ms);
+        assertFalse(e.open.lastAudio);        // экранный отрезок звук игнорирует
+    }
+
+    @Test public void mostlyAudioIsAudioSegment() {
+        EnergyStats e = new EnergyStats();
+        e.event(T, UP, 1, 90, false, false, false, false);
+        e.event(T + 20 * M, UP + M, 2, 90, false, false, false, true);
+        e.event(T + H, UP + 3 * M, 3, 90, true, false, false, false);
+        assertEquals(0, e.off.ms);             // звук 40 из 60 мин
         assertEquals(H, e.offAudio.ms);
-        assertFalse(e.open.audio); // экранный отрезок звук игнорирует
+    }
+
+    /** Ошибка из отчёта: в момент выключения экрана ещё играл звук, потом весь простой — тишина. */
+    @Test public void audioOnlyAtScreenOffIsIgnored() {
+        EnergyStats e = new EnergyStats();
+        e.event(T, UP, 1, 90, true, false, false, true);
+        e.event(T + M, UP + M, 2, 89, false, false, false, true);           // экран выкл, звук ещё играет
+        e.event(T + 2 * M, UP + M + 5_000, 3, 89, false, false, false, false); // звук закончился
+        e.event(T + 3 * H, UP + 10 * M, 4, 87, false, false, false, false);
+        assertEquals(0, e.openAudioMs(T + 3 * H));
+        assertEquals(3 * H - M, e.openMs(false, T + 3 * H));
+        e.event(T + 4 * H, UP + 12 * M, 5, 86, true, false, false, false);
+        assertEquals(4 * H - M, e.off.ms);
+        assertEquals(0, e.offAudio.ms);
+        assertNotNull(e.lastNight);
     }
 
     @Test public void screenOnIgnoresAudio() {
@@ -122,7 +146,8 @@ public class EnergyAudioTest {
         assertEquals(H, l.longOffMs);
         assertEquals(5 * M, l.longOffAwakeMs);
         assertNotNull(l.open);
-        assertTrue(l.open.audio);
+        assertTrue(l.open.lastAudio);
+        assertEquals(H, l.open.audioMs(T + 6 * H));
         EnergyStats.reset(ctx);
         EnergyStats z = EnergyStats.load(ctx);
         assertEquals(0, z.offAudio.ms);
@@ -141,7 +166,7 @@ public class EnergyAudioTest {
         assertEquals(0, l.offAudio.ms);
         assertEquals(0, l.longOffMs);
         assertNotNull(l.open);
-        assertFalse(l.open.audio);
+        assertFalse(l.open.lastAudio);
     }
 
     @Test public void oldSevenArgEventStillWorks() {

@@ -78,6 +78,49 @@ public final class HourlyReport {
         minT = Double.NaN; maxT = Double.NaN;
         screenMs = 0; chargeMs = 0; chargeOnMs = 0; ticks = 0;
         lastEvWall = wall;
+        IdleNet.resetPeriod(el);
+    }
+
+    /** Время последней попытки отправки (по часам телефона). */
+    static volatile long lastTry;
+    /** Отчёт считается пропущенным, если с последней попытки прошло больше этого. */
+    static final long OVERDUE_MS = 65 * 60_000L;
+
+    /**
+     * Часовой будильник неточный: в глубоком сне система может отложить его надолго, а обновление
+     * приложения его снимает. Поэтому при каждом событии службы проверяется, не пропущен ли отчёт.
+     */
+    static boolean overdue(Context ctx, long wall) {
+        try {
+            if (!enabled(ctx)) return false;
+            if (ctx.getSharedPreferences(MainActivity.GH, Context.MODE_PRIVATE).getString("token", "").isEmpty()) return false;
+            long ref = Math.max(Math.max(lastTry, prefs(ctx).getLong("last_try", 0)), startWall);
+            return overdue(ref, wall);
+        } catch (Throwable e) { return false; }
+    }
+
+    static boolean overdue(long ref, long wall) { return ref > 0 && (wall - ref > OVERDUE_MS || wall < ref - DAY_MS); }
+
+    /** Дополнительные разделы отчёта: экран за день и почему телефон мало спал (сеть, приложения). */
+    static String extras(Context ctx, long from, long wall, long el, boolean period) {
+        StringBuilder sb = new StringBuilder();
+        String st = ScreenTime.summary(el, wall);
+        if (st != null) sb.append("\n[Экран за день]\n").append(st).append('\n');
+        StringBuilder w = new StringBuilder();
+        long[] net = IdleNet.snapshot(period, el);
+        String nt = IdleNet.text(net), hint = IdleNet.hint(net);
+        if (nt != null) w.append("Сеть при выключенном экране: ").append(nt).append('\n');
+        if (hint != null) w.append("  → ").append(hint).append('\n');
+        List<String> top = null;
+        try { top = WakeCauses.top(ctx, from, wall, 8); } catch (Throwable ignored) { }
+        if (top == null) w.append("Кто будил: нет доступа к истории использования (Device Info → Энергия → «Дать доступ»)\n");
+        else if (top.isEmpty()) w.append("Кто будил: заметной фоновой активности приложений не было\n");
+        else {
+            w.append("Активность приложений при выключенном экране:\n");
+            for (String t : top) w.append("  ").append(t).append('\n');
+        }
+        sb.append("\n[Почему не спал / кто будил]\n").append(w);
+        return sb.toString();
     }
 
     /** Накопленное {экран вкл, на зарядке, на зарядке с экраном} до момента wall (с идущим промежутком). */
@@ -168,7 +211,12 @@ public final class HourlyReport {
     }
 
     /** Короткий отчёт за период до момента wall. */
-    static synchronized String text(EnergyStats s, String version, long wall, long el, long upt, double lvl) {
+    static String text(EnergyStats s, String version, long wall, long el, long upt, double lvl) {
+        return text(s, version, wall, el, upt, lvl, null);
+    }
+
+    /** extra — дополнительные разделы перед событиями (см. extras). */
+    static synchronized String text(EnergyStats s, String version, long wall, long el, long upt, double lvl, String extra) {
         StringBuilder sb = new StringBuilder();
         sb.append("Device Info ").append(version).append(" — часовой отчёт\n")
                 .append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" (").append(Build.DEVICE).append(")\n");
@@ -216,6 +264,7 @@ public final class HourlyReport {
             String v = ChargeLog.verdict(cs[0]);
             if (v != null) sb.append(v).append('\n');
         }
+        if (extra != null) sb.append(extra);
         sb.append("\n[События]\n");
         if (events.isEmpty()) sb.append("нет\n");
         for (String e : events) sb.append(e).append('\n');
@@ -313,7 +362,13 @@ public final class HourlyReport {
             double[] r = BatteryMeter.read(ctx);
             double lvl = r == null ? Double.NaN : r[0];
             String ts = new SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US).format(new Date(wall));
-            String text = text(s, version, wall, el, upt, lvl);
+            lastTry = wall;
+            prefs(ctx).edit().putLong("last_try", wall).apply();
+            long from;
+            synchronized (HourlyReport.class) { from = startWall > 0 ? startWall : wall - 3600_000L; }
+            String extra = null;
+            try { extra = extras(ctx, from, wall, el, true); } catch (Throwable ignored) { }
+            String text = text(s, version, wall, el, upt, lvl, extra);
             String err = push(token, repo, branch, "hourly", ts + "_v" + version + ".txt.gz", gzip(text),
                     "Часовой отчёт Device Info " + version + ": " + Build.MODEL);
             SharedPreferences.Editor ed = prefs(ctx).edit();

@@ -38,8 +38,29 @@ public final class EnergyStats {
     static final class Segment {
         boolean screenOn; long startElapsed, startUptime, startWall; double startLevel; boolean tainted;
         double minLevel;
-        /** Во время отрезка играл звук (учитывается только для экрана выключенного). */
-        boolean audio;
+        /**
+         * Звук считается по времени: audioMs — сколько звук играл до lastEl (по событиям), lastAudio —
+         * играл ли он при последнем событии. Отрезок «со звуком», если звук занял не меньше половины.
+         */
+        long audioMs, lastEl; boolean lastAudio;
+
+        /** Сколько звук играл до момента elapsed, мс. */
+        long audioMs(long elapsed) {
+            return audioMs + (lastAudio && elapsed > lastEl ? elapsed - lastEl : 0);
+        }
+
+        /** Звук играл не меньше половины отрезка (до момента elapsed). */
+        boolean audioAt(long elapsed) {
+            long dt = elapsed - startElapsed;
+            if (dt <= 0) return lastAudio;
+            return audioMs(elapsed) * 2 >= dt;
+        }
+
+        void markAudio(long elapsed, boolean audio) {
+            if (lastAudio && elapsed > lastEl) audioMs += elapsed - lastEl;
+            if (elapsed > lastEl) lastEl = elapsed;
+            lastAudio = audio;
+        }
     }
 
     final Totals off = new Totals(), on = new Totals();
@@ -65,7 +86,7 @@ public final class EnergyStats {
     void event(long elapsed, long uptime, long wall, double level, boolean screenOn, boolean plugged, boolean busy, boolean audio) {
         if (since == 0) since = wall;
         if (open != null) {
-            if (audio) open.audio = true;
+            if (elapsed >= open.startElapsed) open.markAudio(elapsed, audio);
             if (busy && !open.screenOn) open.tainted = true;
             if (!Double.isNaN(level)) open.minLevel = Math.min(open.minLevel, level);
             if (plugged || open.screenOn != screenOn || elapsed < open.startElapsed || level > open.startLevel + 0.5) {
@@ -75,7 +96,7 @@ public final class EnergyStats {
         if (open == null && !plugged && !Double.isNaN(level)) {
             Segment s = new Segment();
             s.screenOn = screenOn; s.startElapsed = elapsed; s.startUptime = uptime; s.startWall = wall;
-            s.startLevel = level; s.minLevel = level; s.tainted = busy && !screenOn; s.audio = audio;
+            s.startLevel = level; s.minLevel = level; s.tainted = busy && !screenOn; s.lastEl = elapsed; s.lastAudio = audio;
             open = s;
         }
     }
@@ -92,7 +113,7 @@ public final class EnergyStats {
         long awake = Math.max(0, Math.min(dt, uptime - s.startUptime));
         if (s.screenOn) add(on, dt, used, awake);
         else if (!s.tainted) {
-            if (s.audio) add(offAudio, dt, used, awake);
+            if (s.audioAt(elapsed)) add(offAudio, dt, used, awake);
             else {
                 add(off, dt, used, awake);
                 if (dt >= NIGHT_MS) lastNight = new double[]{s.startWall, dt, used, awake / (double) dt, s.startLevel};
@@ -142,14 +163,14 @@ public final class EnergyStats {
     /** Длительность идущего отрезка с таким состоянием экрана, мс (0 — такого отрезка нет). */
     long openMs(boolean screenOn, long elapsed) {
         Segment s = open;
-        if (s == null || s.screenOn != screenOn || (s.tainted && !screenOn) || (s.audio && !screenOn) || elapsed <= s.startElapsed) return 0;
+        if (s == null || s.screenOn != screenOn || (s.tainted && !screenOn) || (!screenOn && s.audioAt(elapsed)) || elapsed <= s.startElapsed) return 0;
         return elapsed - s.startElapsed;
     }
 
     /** Длительность идущего отрезка «экран выключен + звук», мс (0 — такого нет). */
     long openAudioMs(long elapsed) {
         Segment s = open;
-        if (s == null || s.screenOn || s.tainted || !s.audio || elapsed <= s.startElapsed) return 0;
+        if (s == null || s.screenOn || s.tainted || elapsed <= s.startElapsed || !s.audioAt(elapsed)) return 0;
         return elapsed - s.startElapsed;
     }
 
@@ -198,7 +219,9 @@ public final class EnergyStats {
                 s.startElapsed = p.getLong("seg_el", 0); s.startUptime = p.getLong("seg_up", 0);
                 s.startWall = p.getLong("seg_wall", 0); s.startLevel = p.getFloat("seg_lvl", 0);
                 s.minLevel = p.getFloat("seg_min", (float) s.startLevel); s.tainted = p.getBoolean("seg_busy", false);
-                s.audio = p.getBoolean("seg_audio", false);
+                s.lastAudio = p.getBoolean("seg_audio", false);
+                s.audioMs = p.getLong("seg_aums", 0);
+                s.lastEl = p.getLong("seg_lastel", s.startElapsed);
                 e.open = s;
             }
         } catch (Throwable ignored) { }
@@ -222,9 +245,11 @@ public final class EnergyStats {
             if (open != null) ed.putBoolean("seg_on", open.screenOn).putLong("seg_el", open.startElapsed)
                     .putLong("seg_up", open.startUptime).putLong("seg_wall", open.startWall)
                     .putFloat("seg_lvl", (float) open.startLevel).putFloat("seg_min", (float) open.minLevel)
-                    .putBoolean("seg_busy", open.tainted).putBoolean("seg_audio", open.audio);
+                    .putBoolean("seg_busy", open.tainted).putBoolean("seg_audio", open.lastAudio)
+                    .putLong("seg_aums", open.audioMs).putLong("seg_lastel", open.lastEl);
             else ed.remove("seg_on").remove("seg_el").remove("seg_up").remove("seg_wall").remove("seg_lvl")
-                    .remove("seg_min").remove("seg_busy").remove("seg_audio");
+                    .remove("seg_min").remove("seg_busy").remove("seg_audio")
+                    .remove("seg_aums").remove("seg_lastel");
             ed.apply();
         } catch (Throwable ignored) { }
     }

@@ -417,10 +417,17 @@ public class MainActivity extends Activity {
                     .setMessage("Накопленные данные о расходе с экраном выключенным и включённым будут удалены.")
                     .setPositiveButton("Сбросить", (d, w) -> {
                         EnergyStats.reset(this);
+                        IdleNet.resetTotals(this);
                         if (EnergyService.running) EnergyService.stats = new EnergyStats();
                         refresh();
                     })
                     .setNegativeButton("Отмена", null).show();
+        } else if ("usage_access".equals(id)) {
+            try { startActivity(WakeCauses.settingsIntent(this)); }
+            catch (Throwable e) {
+                try { startActivity(new Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)); }
+                catch (Throwable e2) { say("Не удалось открыть настройки доступа", 6000); }
+            }
         } else if ("battery_opt".equals(id)) {
             try {
                 startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,

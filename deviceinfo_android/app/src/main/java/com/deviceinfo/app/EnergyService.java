@@ -40,10 +40,15 @@ public class EnergyService extends Service {
             final Context app = getApplicationContext();
             if (BgSampler.wanted(app)) { try { exec.execute(() -> BgSampler.tick(app)); } catch (Throwable ignored) { } }
             if (interactive()) { try { exec.execute(() -> HourlyReport.sample(app)); } catch (Throwable ignored) { } }
+            if (++ticks % 6 == 0) { try { ScreenTime.save(app); } catch (Throwable ignored) { } } // раз в минуту
             h.postDelayed(this, BgSampler.PERIOD_MS);
         }
     };
     private long lastNotify;
+    private int ticks;
+    private android.media.AudioManager.AudioPlaybackCallback audioCb;
+    private android.net.ConnectivityManager.NetworkCallback netCb;
+    private boolean lastMusic;
 
     private static volatile EnergyService self;
 
@@ -58,6 +63,7 @@ public class EnergyService extends Service {
             return false;
         }
         HourlyReport.schedule(c);
+        HourlyReport.lastTry = System.currentTimeMillis();
         final EnergyStats st = stats;
         final String vn = sv.versionName();
         try {
@@ -119,7 +125,9 @@ public class EnergyService extends Service {
             s.open = null; // что было между остановкой и стартом — неизвестно
             stats = s;
             ChargeLog.load(this);
+            IdleNet.load(this); // до HourlyReport.load: тот может начать новый период и обнулить период сети
             HourlyReport.load(this, s);
+            ScreenTime.load(this, SystemClock.elapsedRealtime());
             rx = new BroadcastReceiver() {
                 @Override public void onReceive(Context c, Intent i) { onEvent(i); }
             };
@@ -133,9 +141,47 @@ public class EnergyService extends Service {
             if (sticky != null) onEvent(sticky);
             h.post(sample);
             HourlyReport.schedule(this);
+            watchAudioAndNetwork();
         }
         return START_STICKY;
     }
+
+    /**
+     * Начало/конец звука и смена сети приходят сразу (без них звук был бы виден только при изменении
+     * батареи). Это обратные вызовы системы — телефон они не будят.
+     */
+    private void watchAudioAndNetwork() {
+        try {
+            android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+            lastMusic = am.isMusicActive();
+            audioCb = new android.media.AudioManager.AudioPlaybackCallback() {
+                @Override public void onPlaybackConfigChanged(java.util.List<android.media.AudioPlaybackConfiguration> c) {
+                    boolean m;
+                    try { m = am.isMusicActive(); } catch (Throwable e) { return; }
+                    if (m != lastMusic) { lastMusic = m; onEvent(new Intent(ACTION_POKE)); }
+                }
+            };
+            am.registerAudioPlaybackCallback(audioCb, h);
+        } catch (Throwable ignored) { audioCb = null; }
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            netCb = new android.net.ConnectivityManager.NetworkCallback() {
+                @Override public void onCapabilitiesChanged(android.net.Network n, android.net.NetworkCapabilities c) { net(IdleNet.type(c)); }
+                @Override public void onLost(android.net.Network n) { net(IdleNet.NONE); }
+            };
+            cm.registerDefaultNetworkCallback(netCb, h);
+        } catch (Throwable ignored) { netCb = null; }
+    }
+
+    private void net(int type) {
+        try {
+            if (type == IdleNet.net) return;
+            IdleNet.update(SystemClock.elapsedRealtime(), null, type, type == IdleNet.MOBILE ? IdleNet.weakSignal(this) : Boolean.FALSE);
+            IdleNet.save(this);
+        } catch (Throwable ignored) { }
+    }
+
+    static final String ACTION_POKE = "com.deviceinfo.app.action.POKE";
 
     private synchronized void onEvent(Intent i) {
         // экран выключен — замеры не нужны (телефон всё равно заснёт), включён — возобновить
@@ -164,6 +210,13 @@ public class EnergyService extends Service {
             s.save(this);
             HourlyReport.event(System.currentTimeMillis(), lvl, screen, plugged, audio, b.getIntExtra("temperature", Integer.MIN_VALUE) / 10.0);
             HourlyReport.save(this);
+            long elNow = SystemClock.elapsedRealtime(), wallNow = System.currentTimeMillis();
+            ScreenTime.event(elNow, wallNow, screen);
+            ScreenTime.save(this, elNow, wallNow);
+            int nt = IdleNet.current(this);
+            IdleNet.update(elNow, screen, nt, nt == IdleNet.MOBILE ? IdleNet.weakSignal(this) : Boolean.FALSE);
+            IdleNet.save(this);
+            if (HourlyReport.overdue(this, wallNow)) hourly(getApplicationContext(), null);
             // тест зарядки в фоне
             double[] r = BatteryMeter.read(this);
             int mv = b.getIntExtra("voltage", -1);
@@ -223,6 +276,12 @@ public class EnergyService extends Service {
             s.close(SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(), lvl);
             s.save(this);
         }
+        try {
+            ScreenTime.stop(SystemClock.elapsedRealtime(), System.currentTimeMillis());
+            ScreenTime.save(this);
+            IdleNet.update(SystemClock.elapsedRealtime(), null, null, null);
+            IdleNet.save(this);
+        } catch (Throwable ignored) { }
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
@@ -236,6 +295,11 @@ public class EnergyService extends Service {
         if (s != null) s.save(this);
         stats = null;
         try { if (rx != null) unregisterReceiver(rx); } catch (Throwable ignored) { }
+        try { if (audioCb != null) ((android.media.AudioManager) getSystemService(AUDIO_SERVICE)).unregisterAudioPlaybackCallback(audioCb); }
+        catch (Throwable ignored) { }
+        try { if (netCb != null) ((android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netCb); }
+        catch (Throwable ignored) { }
+        try { ScreenTime.save(this); IdleNet.save(this); } catch (Throwable ignored) { }
         super.onDestroy();
     }
 

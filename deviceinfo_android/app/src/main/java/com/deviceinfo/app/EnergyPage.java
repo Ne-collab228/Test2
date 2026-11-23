@@ -37,6 +37,7 @@ public class EnergyPage implements Page {
 
         // вместе с идущим сейчас отрезком (только пока служба работает — иначе он устарел)
         long el = android.os.SystemClock.elapsedRealtime(), upt = android.os.SystemClock.uptimeMillis();
+        if (!on) { ScreenTime.load(ctx, el); IdleNet.load(ctx); } // служба не идёт — взять сохранённое
         double lvlNow = Double.NaN;
         double[] rNow = BatteryMeter.read(ctx);
         if (rNow != null) lvlNow = rNow[0];
@@ -102,6 +103,9 @@ public class EnergyPage implements Page {
         out.note("Норма для простоя: до ~1 %/ч (телефон почти всё время в глубоком сне). Если расход выше 3 %/ч или "
                 + "сон ниже 30 % — какое-то приложение будит телефон: проверьте Настройки → Батарея → Потребление.");
 
+        // --- почему мало спал ---
+        causes(ctx, out, on, el, sleep, sg, offR);
+
         // --- экран выключен, играла музыка ---
         EnergyStats.Totals au = s.offAudio;
         long auOpen = on ? s.openAudioMs(el) : 0;
@@ -130,6 +134,17 @@ public class EnergyPage implements Page {
             out.row("Расход", Util.f("%.1f %%/ч", onR) + (Double.isNaN(ma) ? "" : Util.f(" ≈ %.0f мА", ma)), gradeColor(og));
             double h = EnergyStats.hoursFull(onR);
             if (!Double.isNaN(h)) out.row("Полного заряда хватит на", Util.f("≈ %.1f ч экрана", h), Section.INFO);
+        }
+
+        // --- экран по дням ---
+        java.util.List<String[]> days = ScreenTime.rows(el, System.currentTimeMillis());
+        if (!days.isEmpty()) {
+            long today = ScreenTime.msOn(el, System.currentTimeMillis(), System.currentTimeMillis());
+            out.header("Экран за день", ScreenTime.hm(today) + " сегодня", Section.NORMAL);
+            for (String[] d : days) out.row(d[0], d[1]);
+            long avg = ScreenTime.avgPast(el, System.currentTimeMillis());
+            if (avg >= 0 && days.size() > 2) out.row("В среднем за прошлые дни", ScreenTime.hm(avg), Section.INFO);
+            out.note("Считается, пока включено слежение: если оно было выключено часть дня, время за этот день будет меньше настоящего.");
         }
 
         // --- прямо сейчас ---
@@ -171,5 +186,43 @@ public class EnergyPage implements Page {
         out.note("Больше всего экономят: частота экрана 60 Гц вместо 120 Гц, яркость ниже, ограничение графики/FPS в играх, "
                 + "запрет фоновой активности лишним приложениям.");
         if (on || s.off.ms > 0 || s.on.ms > 0) out.action("energy_reset", "Сбросить статистику");
+    }
+
+    private static long causesT;
+    private static java.util.List<String> causesTop;
+    private static boolean causesAccess;
+
+    /** «Почему мало спал / кто будил»: сеть в простое и фоновая активность приложений за сутки. */
+    private static void causes(Context ctx, Section out, boolean on, long el, double sleep, int sg, double offR) {
+        long now = System.currentTimeMillis();
+        boolean bad = sg >= 3 || EnergyStats.offGrade(offR) >= 3;
+        out.header("Почему мало спал / кто будил", bad ? "есть причины" : null, bad ? Section.WARN : Section.NORMAL);
+        long[] net = IdleNet.snapshot(false, el);
+        String nt = IdleNet.text(net), hint = IdleNet.hint(net);
+        if (nt != null) out.row("Сеть при выключенном экране", nt);
+        else if (on) out.row("Сеть при выключенном экране", "сбор данных", Section.MUTED);
+        if (hint != null) out.row("Сеть", hint, Section.WARN);
+        if (now - causesT > 60_000 || causesT > now) {
+            causesT = now;
+            causesAccess = WakeCauses.hasAccess(ctx);
+            java.util.List<String> t = null;
+            try { t = causesAccess ? WakeCauses.top(ctx, now - 24 * 3600_000L, now, 8) : null; } catch (Throwable ignored) { }
+            causesTop = t;
+        }
+        if (!causesAccess) {
+            out.row("Приложения", "нужен доступ к истории использования", Section.MUTED);
+            out.action("usage_access", "Дать доступ к истории использования");
+            out.note("Доступ нужен, чтобы видеть, какие приложения работали при выключенном экране: фоновый трафик, "
+                    + "запуски фоновых служб и уведомления. Данные остаются на телефоне (и в ваших отчётах на GitHub). "
+                    + "В списке найдите Device Info и включите.");
+        } else if (causesTop == null || causesTop.isEmpty()) {
+            out.row("Приложения за 24 ч", "заметной фоновой активности не было", Section.OK);
+        } else {
+            out.row("Приложения за 24 ч", "больше всего работали в фоне:", Section.INFO);
+            for (int i = 0; i < causesTop.size(); i++) out.row("  " + (i + 1), causesTop.get(i));
+            out.note("Трафик «в фоне» — когда приложение не на экране (в том числе при выключенном экране). Запуски "
+                    + "фоновой службы и уведомления — только при выключенном экране. Каждое такое действие будит процессор. "
+                    + "Лишним приложениям можно запретить работу в фоне: Настройки → Батарея → Запуск приложений.");
+        }
     }
 }
