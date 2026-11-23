@@ -202,9 +202,11 @@ public class EnergyPage implements Page {
         if (nt != null) out.row("Сеть при выключенном экране", nt);
         else if (on) out.row("Сеть при выключенном экране", "сбор данных", Section.MUTED);
         if (hint != null) out.row("Сеть", hint, Section.WARN);
-        if (now - causesT > 60_000 || causesT > now) {
+        // доступ проверяется каждый раз (быстро): после возврата из настроек раздел обновится сразу
+        boolean acc = WakeCauses.hasAccess(ctx);
+        if (acc != causesAccess || now - causesT > 60_000 || causesT > now) {
             causesT = now;
-            causesAccess = WakeCauses.hasAccess(ctx);
+            causesAccess = acc;
             java.util.List<String> t = null;
             try { t = causesAccess ? WakeCauses.top(ctx, now - 24 * 3600_000L, now, 8) : null; } catch (Throwable ignored) { }
             causesTop = t;

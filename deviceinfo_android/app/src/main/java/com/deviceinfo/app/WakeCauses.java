@@ -56,6 +56,15 @@ final class WakeCauses {
             }
         } catch (Throwable ignored) {
         }
+        // запасной путь (на некоторых прошивках проверка выше отвечает неточно): без доступа список пустой
+        try {
+            UsageStatsManager usm = (UsageStatsManager) ctx.getSystemService(Context.USAGE_STATS_SERVICE);
+            long now = System.currentTimeMillis();
+            java.util.List<android.app.usage.UsageStats> l =
+                    usm == null ? null : usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 86_400_000L, now);
+            return l != null && !l.isEmpty();
+        } catch (Throwable ignored) {
+        }
         return false;
     }
 
