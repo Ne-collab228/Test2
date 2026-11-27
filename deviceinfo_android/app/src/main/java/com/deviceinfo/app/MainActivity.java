@@ -485,6 +485,7 @@ public class MainActivity extends Activity {
             if (it.type == 0 || it.type == 1 || it.type == 2 || it.type == 5 || it.type == 6) sb.append(it.key);
             if (it.type == 0) sb.append(it.value == null ? "" : "#");
             if (it.type == 1) sb.append(stacked(it.key, it.value) ? "#v" : "#h");
+            if (it.type == 7) sb.append(it.key);
             if (it.type == 4) sb.append(it.rows.size()).append('x').append(it.headers.length);
             sb.append('\n');
         }
@@ -493,7 +494,35 @@ public class MainActivity extends Activity {
 
     // Держатели View для обновления на месте
     static final class RowH { TextView value; }
-    static final class BarH { TextView value; ProgressBar pb; GradientDrawable fill; }
+    static final class BarH {
+        TextView value; ProgressBar pb; GradientDrawable fill;
+        int target, curColor; android.animation.ValueAnimator anim;
+        void cancel() { if (anim != null) { anim.cancel(); anim = null; } }
+    }
+    static final class BatteryH { BatteryView view; }
+
+    /** Плавно ведёт полосу к новому значению и цвету; прерываемо: новый вызов стартует с текущей позиции. */
+    static void animateBar(BarH bh, int target, int color) {
+        if (bh.target == target && bh.curColor == color) return;
+        bh.cancel();
+        bh.target = target;
+        final int fromP = bh.pb.getProgress(), fromC = bh.curColor, toC = color;
+        bh.curColor = color;
+        final android.animation.ArgbEvaluator ev = new android.animation.ArgbEvaluator();
+        final android.animation.ValueAnimator va = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        va.setDuration(500);
+        va.setInterpolator(new android.view.animation.DecelerateInterpolator(1.6f));
+        va.addUpdateListener(a -> {
+            float f = (float) a.getAnimatedValue();
+            bh.pb.setProgress(Math.round(fromP + (target - fromP) * f));
+            bh.fill.setColor((Integer) ev.evaluate(f, fromC, toC));
+        });
+        va.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator a) { if (bh.anim == va) bh.anim = null; }
+        });
+        bh.anim = va;
+        va.start();
+    }
     static final class NoteH { TextView text; }
     static final class ActionH { Button button; }
     static final class TableH { List<TextView[]> cells = new ArrayList<>(); }
@@ -533,8 +562,12 @@ public class MainActivity extends Activity {
                 case 2: {
                     BarH bh = (BarH) h;
                     setText(bh.value, it.value);
-                    bh.pb.setProgress((int) (it.pct * 10));
-                    bh.fill.setColor(color(it.color));
+                    animateBar(bh, (int) (it.pct * 10), color(it.color));
+                    break;
+                }
+                case 7: {
+                    BatteryH bth = (BatteryH) h;
+                    bth.view.set(it.pct, it.state, it.value, it.color == Section.NORMAL ? -1 : color(it.color));
                     break;
                 }
                 case 3: {
@@ -581,6 +614,7 @@ public class MainActivity extends Activity {
 
     void rebuild(Section s) {
         int y = scroll.getScrollY();
+        for (Object o : holders) if (o instanceof BarH) ((BarH) o).cancel();
         content.removeAllViews();
         holders.clear();
         for (Section.Item it : s.items) {
@@ -669,13 +703,15 @@ public class MainActivity extends Activity {
                     ld.setId(0, android.R.id.background);
                     ld.setId(1, android.R.id.progress);
                     pb.setProgressDrawable(ld);
-                    pb.setProgress((int) (it.pct * 10));
+                    pb.setProgress(0);
                     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(10));
                     lp.topMargin = dp(7);
                     r.addView(pb, lp);
                     content.addView(r);
                     BarH bh = new BarH();
                     bh.value = val; bh.pb = pb; bh.fill = fill;
+                    bh.curColor = color(it.color); bh.target = 0;
+                    animateBar(bh, (int) (it.pct * 10), bh.curColor);
                     holders.add(bh);
                     break;
                 }
@@ -742,6 +778,17 @@ public class MainActivity extends Activity {
                     ChartH ch = new ChartH();
                     ch.chart = cv; ch.value = val;
                     holders.add(ch);
+                    break;
+                }
+                case 7: {
+                    BatteryView bv = new BatteryView(this, th);
+                    bv.set(it.pct, it.state, it.value, it.color == Section.NORMAL ? -1 : color(it.color));
+                    LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-1, dp(52));
+                    bl.setMargins(0, dp(6), 0, dp(6));
+                    content.addView(bv, bl);
+                    BatteryH bth = new BatteryH();
+                    bth.view = bv;
+                    holders.add(bth);
                     break;
                 }
                 default:

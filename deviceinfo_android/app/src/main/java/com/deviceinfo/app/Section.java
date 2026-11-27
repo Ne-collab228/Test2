@@ -17,6 +17,8 @@ public final class Section {
         public String loLabel, hiLabel;
         public String key, value;
         public int color;
+        /** Батарея (type 7): 0 разряд, 1 зарядка, 2 полная/не заряжается. */
+        public int state;
         public float pct;
         public String[] headers;
         public List<String[]> rows;
@@ -78,6 +80,14 @@ public final class Section {
         items.add(i);
     }
 
+    /** Анимированная батарея (type 7). state: 0 разряд, 1 зарядка, 2 полная/не заряжается; color — Section.*-цвет (NORMAL — по уровню). */
+    public void battery(String key, double levelPct, int state, String text, int color) {
+        Item i = new Item(7);
+        i.key = key; i.value = text; i.color = color; i.state = state;
+        i.pct = (float) Math.max(0, Math.min(100, levelPct));
+        items.add(i);
+    }
+
     public void note(String text) { note(text, MUTED); }
 
     public void note(String text, int color) {
@@ -118,6 +128,7 @@ public final class Section {
                             .append(i.loLabel).append(" – ").append(i.hiLabel).append(')');
                     sb.append('\n');
                     break;
+                case 7: sb.append(i.key).append(": ").append(i.value).append('\n'); break;
                 case 1: case 2: sb.append(i.key).append(": ").append(i.value).append('\n'); break;
                 case 3: sb.append("  ").append(i.value).append('\n'); break;
                 case 5: sb.append("[кнопка] ").append(i.value).append('\n'); break;
