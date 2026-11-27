@@ -4,7 +4,6 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
-import android.text.TextUtils;
 import android.view.View;
 
 import java.util.ArrayList;
@@ -44,6 +43,15 @@ public class HBarsView extends View {
         invalidate();
     }
 
+    /** Обрезать текст с «…», чтобы влез в ширину. */
+    static String fit(String s, Paint p, float width) {
+        if (s == null) return "";
+        if (p.measureText(s) <= width) return s;
+        int n = s.length();
+        while (n > 0 && p.measureText(s, 0, n) + p.measureText("…") > width) n--;
+        return n <= 0 ? "" : s.substring(0, n).trim() + "…";
+    }
+
     @Override protected void onMeasure(int w, int h) {
         setMeasuredDimension(MeasureSpec.getSize(w), (int) (Math.max(1, rows.size()) * ROW_DP * d + 4 * d));
     }
@@ -59,7 +67,7 @@ public class HBarsView extends View {
         for (int i = 0; i < rows.size(); i++) {
             String[] row = rows.get(i);
             float top = i * ROW_DP * d + 2 * d, mid = top + ROW_DP * d / 2;
-            String nm = TextUtils.ellipsize(row[0], new android.text.TextPaint(name), nameW, TextUtils.TruncateAt.END).toString();
+            String nm = fit(row[0], name, nameW);
             c.drawText(nm, 0, mid + 5 * d, name);
             double v = i < values.length ? values[i] : 0;
             float len = max > 0 && v > 0 ? (float) (v / max * barMax) : 0;
@@ -75,7 +83,7 @@ public class HBarsView extends View {
             String e = row.length > 2 && row[2] != null ? row[2] : "";
             if (!e.isEmpty()) {
                 String t = (n.isEmpty() ? "" : "· ") + e;
-                t = TextUtils.ellipsize(t, new android.text.TextPaint(extra), Math.max(0, w - x), TextUtils.TruncateAt.END).toString();
+                t = fit(t, extra, Math.max(0, w - x));
                 c.drawText(t, x, mid + 5 * d, extra);
             }
         }

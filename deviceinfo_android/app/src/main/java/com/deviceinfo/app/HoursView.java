@@ -107,12 +107,14 @@ public class HoursView extends View {
         }
         // легенда
         float lx = 0, lyy = bottom + AXIS_DP * d + 14 * d;
-        int[] lk = {WIFI, MOBILE, CHARGE, SCREEN};
-        String[] ln = {"Wi-Fi", "мобильная", "зарядка", "экран вкл."};
+        boolean hasFull = false;
+        for (int k : kinds) if (k == FULL) hasFull = true;
+        int[] lk = hasFull ? new int[]{WIFI, MOBILE, CHARGE, SCREEN, FULL} : new int[]{WIFI, MOBILE, CHARGE, SCREEN};
+        String[] ln = {"Wi-Fi", "мобильная", "зарядка", "экран вкл.", "на 100 %"};
         for (int j = 0; j < lk.length; j++) {
             float tw = 10 * d + 5 * d + txt.measureText(ln[j]) + 14 * d;
             if (lx + tw > w && lx > 0) { lx = 0; lyy += 18 * d; }
-            if (lk[j] == CHARGE) drawHatched(c, lx, lyy - 9 * d, lx + 10 * d, lyy + 1 * d, false);
+            if (lk[j] == CHARGE || lk[j] == FULL) drawHatched(c, lx, lyy - 9 * d, lx + 10 * d, lyy + 1 * d, lk[j] == FULL);
             else {
                 p.setColor(lk[j] == WIFI ? wifi : lk[j] == MOBILE ? mobile : th.surface2);
                 r.set(lx, lyy - 9 * d, lx + 10 * d, lyy + 1 * d);

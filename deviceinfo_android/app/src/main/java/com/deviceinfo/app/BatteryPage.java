@@ -427,8 +427,8 @@ public class BatteryPage implements Page {
         // --- Состояние ---
         recordCurrent(curMa);
         out.header("Состояние", Double.isNaN(lvl) ? null : Util.f("%.0f %%", lvl), Section.NORMAL);
-        if (!Double.isNaN(lvl)) out.bar("Уровень заряда", Util.f("%.0f %%", lvl), lvl,
-                lvl <= 15 ? Section.CRIT : (lvl <= 30 ? Section.WARN : Section.OK));
+        if (!Double.isNaN(lvl)) out.battery("Уровень заряда", lvl, status == 2 ? 1 : (status == 5 || status == 4 ? 2 : 0),
+                Util.f("%.0f %%", lvl), Section.NORMAL);
         PreciseMeter.Result precise = PreciseMeter.last(ctx);
         // Реальная ёмкость — только по точному замеру; без него — паспортная.
         double capMah = precise != null ? precise.capacityMah : designMah;
