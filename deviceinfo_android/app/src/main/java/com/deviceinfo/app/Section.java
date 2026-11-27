@@ -21,6 +21,8 @@ public final class Section {
         public String[] headers;
         public List<String[]> rows;
         public float[] ratios;
+        /** Столбики по часам (тип 9): вид каждого столбика (см. HoursView). */
+        public int[] kinds;
         Item(int type) { this.type = type; }
     }
 
@@ -95,6 +97,26 @@ public final class Section {
         Item i = new Item(4); i.headers = headers; i.rows = rows; i.ratios = ratios; items.add(i);
     }
 
+    /**
+     * Горизонтальные полосы (тип 8): у каждой строки название, значение (длина полосы), подпись значения
+     * и серая приписка. headline — крупная строка сверху (может быть null).
+     */
+    public void hbars(String key, String headline, List<String[]> labelValueExtra, double[] values, int color) {
+        Item i = new Item(8);
+        i.key = key; i.value = headline; i.rows = labelValueExtra; i.series = values; i.color = color;
+        items.add(i);
+    }
+
+    /**
+     * Столбики по часам (тип 9): labels — подписи часов, values — высота (NaN — нет столбика),
+     * kinds — вид (HoursView.WIFI / MOBILE / CHARGE / SCREEN / FULL), value — итог текстом.
+     */
+    public void hours(String key, String value, String[] labels, double[] values, int[] kinds) {
+        Item i = new Item(9);
+        i.key = key; i.value = value; i.headers = labels; i.series = values; i.kinds = kinds;
+        items.add(i);
+    }
+
     /** Цвет по уровню (0..100): зелёный / оранжевый / красный. */
     public static int level(double pct, double warn, double crit) {
         return pct >= crit ? CRIT : (pct >= warn ? WARN : OK);
@@ -117,6 +139,25 @@ public final class Section {
                     if (i.series.length > 1) sb.append(" (график: ").append(i.series.length).append(" точек, шкала ")
                             .append(i.loLabel).append(" – ").append(i.hiLabel).append(')');
                     sb.append('\n');
+                    break;
+                case 8:
+                    sb.append(i.key).append(':');
+                    if (i.value != null) sb.append(' ').append(i.value);
+                    sb.append('\n');
+                    for (String[] r : i.rows) {
+                        sb.append("  ").append(r[0]).append(" — ").append(r[1]);
+                        if (r.length > 2 && r[2] != null && !r[2].isEmpty()) sb.append(" · ").append(r[2]);
+                        sb.append('\n');
+                    }
+                    break;
+                case 9:
+                    sb.append(i.key).append(": ").append(i.value == null ? "" : i.value).append('\n');
+                    for (int k = 0; k < i.series.length; k++) {
+                        String kind = HoursView.kindName(i.kinds[k]);
+                        if (kind == null) continue;
+                        sb.append("  ").append(i.headers[k]).append(' ')
+                                .append(Double.isNaN(i.series[k]) ? "" : Util.f("%.1f %%/ч ", i.series[k])).append(kind).append('\n');
+                    }
                     break;
                 case 1: case 2: sb.append(i.key).append(": ").append(i.value).append('\n'); break;
                 case 3: sb.append("  ").append(i.value).append('\n'); break;

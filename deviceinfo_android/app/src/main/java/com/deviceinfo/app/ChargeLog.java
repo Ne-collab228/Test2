@@ -54,6 +54,9 @@ public final class ChargeLog {
         return true;
     }
 
+    /** Время последней точки сессии (wall, мс); 0 — нет точек. */
+    static synchronized long lastT() { return points.isEmpty() ? 0 : (long) points.get(points.size() - 1)[0]; }
+
     /** Сводка: {пиковая Вт, средняя Вт, от %, до %, длительность мс, точек}; null — нет данных. */
     static synchronized double[] summary() {
         if (points.size() < 2) return null;

@@ -104,21 +104,17 @@ public final class HourlyReport {
     /** Дополнительные разделы отчёта: экран за день и почему телефон мало спал (сеть, приложения). */
     static String extras(Context ctx, long from, long wall, long el, boolean period) {
         StringBuilder sb = new StringBuilder();
-        String st = ScreenTime.summary(el, wall);
+        String st = ScreenTime.summary(ctx, el, wall);
         if (st != null) sb.append("\n[Экран за день]\n").append(st).append('\n');
         StringBuilder w = new StringBuilder();
         long[] net = IdleNet.snapshot(period, el);
         String nt = IdleNet.text(net), hint = IdleNet.hint(net);
         if (nt != null) w.append("Сеть при выключенном экране: ").append(nt).append('\n');
         if (hint != null) w.append("  → ").append(hint).append('\n');
-        List<String> top = null;
-        try { top = WakeCauses.top(ctx, from, wall, 8); } catch (Throwable ignored) { }
-        if (top == null) w.append("Кто будил: нет доступа к истории использования (Device Info → Энергия → «Дать доступ»)\n");
-        else if (top.isEmpty()) w.append("Кто будил: заметной фоновой активности приложений не было\n");
-        else {
-            w.append("Активность приложений при выключенном экране:\n");
-            for (String t : top) w.append("  ").append(t).append('\n');
-        }
+        List<WakeCauses.App> apps = null;
+        try { apps = WakeCauses.query(ctx, from, wall); } catch (Throwable ignored) { }
+        if (apps == null) w.append("Кто будил: нет доступа к истории использования (Device Info → Энергия → «Дать доступ»)\n");
+        else w.append(WakeCauses.chart(apps, 8).line()).append('\n');
         sb.append("\n[Почему не спал / кто будил]\n").append(w);
         return sb.toString();
     }
@@ -257,10 +253,13 @@ public final class HourlyReport {
         if (n > 0) sb.append(Util.f("Ток: в среднем %.0f мА, от %.0f до %.0f мА (%d замеров)\n", sumMa / n, minMa, maxMa, n));
         if (nLoad > 0) sb.append(Util.f("Загрузка CPU: в среднем %.0f %%, макс %.0f %%\n", sumLoad / nLoad, maxLoad));
         if (!Double.isNaN(minT)) sb.append(Util.f("\nТемпература батареи: %.1f–%.1f °C\n", minT, maxT));
-        double[] cs = ChargeLog.startMs >= from ? ChargeLog.summary() : null;
+        double[] cs = ChargeLog.startMs >= from || ChargeLog.charging || ChargeLog.lastT() >= from ? ChargeLog.summary() : null;
         if (cs != null) {
             sb.append("\n[Зарядка]\n").append(Util.f("%.0f → %.0f %% за %s · пик %.1f Вт, в среднем %.1f Вт\n",
                     cs[2], cs[3], Util.duration(cs[4] / 1000.0), cs[0], cs[1]));
+            if (ChargeLog.startMs > 0 && ChargeLog.startMs < from)
+                sb.append("(зарядка с ").append(hm(ChargeLog.startMs)).append(ChargeLog.charging ? ", идёт" : "").append(")\n");
+            else if (ChargeLog.charging) sb.append("(идёт)\n");
             String v = ChargeLog.verdict(cs[0]);
             if (v != null) sb.append(v).append('\n');
         }
@@ -366,6 +365,10 @@ public final class HourlyReport {
             prefs(ctx).edit().putLong("last_try", wall).apply();
             long from;
             synchronized (HourlyReport.class) { from = startWall > 0 ? startWall : wall - 3600_000L; }
+            try { // температура в момент отчёта: на 100 % событий батареи может не быть весь час
+                Intent bi = ctx.registerReceiver(null, new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                if (bi != null) synchronized (HourlyReport.class) { temp(bi.getIntExtra("temperature", Integer.MIN_VALUE) / 10.0); }
+            } catch (Throwable ignored) { }
             String extra = null;
             try { extra = extras(ctx, from, wall, el, true); } catch (Throwable ignored) { }
             String text = text(s, version, wall, el, upt, lvl, extra);

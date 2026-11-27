@@ -38,6 +38,9 @@ final class WakeCauses {
 
         App(String pkg) { this.pkg = pkg; this.label = pkg; }
 
+        /** Сколько раз будило телефон: уведомления + запуски фоновых служб при выключенном экране. */
+        int wakes() { return fgsStarts + notifications; }
+
         /** МБ фонового трафика * 1 + запуски фоновых служб * 2 + уведомления * 1. */
         double score() {
             return bgBytes / 1048576.0 + fgsStarts * 2.0 + notifications;
@@ -153,6 +156,25 @@ final class WakeCauses {
         return out;
     }
 
+    /** Понятное имя для системных uid (без пакета). */
+    static String systemName(int uid, String raw) {
+        switch (uid) {
+            case 0: return "Ядро системы";
+            case 1000: return "Система Android";
+            case 1001: return "Связь (модем)";
+            case 1013: return "Медиа (звук, видео)";
+            case 1021: return "Геолокация (GPS)";
+            case 1027: return "NFC";
+            case 1051: return "Сеть (DNS)";
+            case 1073: return "Сетевые службы";
+            case -4: return "Удалённые приложения";
+            case -5: return "Раздача интернета";
+        }
+        if (uid < 0) return "Сетевые службы системы";
+        if (uid >= 10000) return "Удалённое приложение";
+        return "Система (" + (raw == null ? "uid " + uid : raw) + ")";
+    }
+
     private static String[] uidName(PackageManager pm, int uid) {
         try {
             if (uid == 1000) return new String[]{"android", "Система Android"};
@@ -162,10 +184,10 @@ final class WakeCauses {
             }
             String n = null;
             try { n = pm.getNameForUid(uid); } catch (Throwable ignored) { }
-            if (n == null) n = "uid " + uid;
-            return new String[]{n, "Система (" + n + ")"};
+            String key = n == null ? "uid " + uid : n;
+            return new String[]{key, systemName(uid, n)};
         } catch (Throwable t) {
-            return new String[]{"uid " + uid, "Система (uid " + uid + ")"};
+            return new String[]{"uid " + uid, systemName(uid, null)};
         }
     }
 
@@ -208,5 +230,56 @@ final class WakeCauses {
         List<String> r = new ArrayList<>();
         for (App a : l) { if (r.size() >= max) break; r.add(describe(a)); }
         return r;
+    }
+
+    /** Итог для диаграммы: всего пробуждений, строки {название, число, трафик} и значения полос. */
+    static final class Chart {
+        int total;
+        App top;
+        final List<String[]> rows = new ArrayList<>();
+        double[] values = new double[0];
+
+        String headline() {
+            if (top == null || total == 0) return "Не будили ни разу";
+            return "Будили " + total + " " + plural(total, "раз", "раза", "раз") + " · чаще всех " + top.label + " (" + top.wakes() + ")";
+        }
+
+        /** Строка для текстового отчёта: «Будили 12 раз: MAX 6, Mi Fitness 1; в фоне скачали: Telegram 1.2 МБ». */
+        String line() {
+            StringBuilder b = new StringBuilder();
+            if (top == null || total == 0) b.append("Не будили ни разу");
+            else {
+                b.append("Будили ").append(total).append(' ').append(plural(total, "раз", "раза", "раз")).append(": ");
+                boolean first = true;
+                for (String[] r : rows) if (!r[1].isEmpty()) { b.append(first ? "" : ", ").append(r[0]).append(' ').append(r[1]); first = false; }
+            }
+            StringBuilder t = new StringBuilder();
+            for (String[] r : rows) if (!r[2].isEmpty()) t.append(t.length() == 0 ? "" : ", ").append(r[0]).append(' ').append(r[2]);
+            if (t.length() > 0) b.append("; в фоне скачали: ").append(t);
+            return b.toString();
+        }
+    }
+
+    /** Трафик меньше этого в диаграмме не показывается (если приложение не будило). */
+    static final long MIN_BYTES = 1024L * 1024;
+
+    static Chart chart(List<App> apps, int max) {
+        Chart c = new Chart();
+        if (apps == null) return c;
+        List<App> l = new ArrayList<>(apps);
+        for (App a : l) c.total += a.wakes();
+        Collections.sort(l, (x, y) -> x.wakes() != y.wakes() ? Integer.compare(y.wakes(), x.wakes()) : Long.compare(y.bgBytes, x.bgBytes));
+        List<Double> v = new ArrayList<>();
+        for (App a : l) {
+            if (c.rows.size() >= max) break;
+            if (a.wakes() == 0 && a.bgBytes < MIN_BYTES) continue;
+            if (c.top == null && a.wakes() > 0) c.top = a;
+            c.rows.add(new String[]{a.label == null ? a.pkg : a.label, a.wakes() > 0 ? String.valueOf(a.wakes()) : "",
+                    a.bgBytes >= 100 * 1024 ? bytes(a.bgBytes) : ""});
+            v.add((double) a.wakes());
+        }
+        c.values = new double[v.size()];
+        for (int i = 0; i < v.size(); i++) c.values[i] = v.get(i);
+        return c;
     }
 }

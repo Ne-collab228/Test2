@@ -486,6 +486,8 @@ public class MainActivity extends Activity {
             if (it.type == 0) sb.append(it.value == null ? "" : "#");
             if (it.type == 1) sb.append(stacked(it.key, it.value) ? "#v" : "#h");
             if (it.type == 4) sb.append(it.rows.size()).append('x').append(it.headers.length);
+            if (it.type == 8) sb.append(it.key).append(it.value == null ? "" : "#").append(it.rows.size());
+            if (it.type == 9) sb.append(it.key);
             sb.append('\n');
         }
         return sb.toString();
@@ -499,6 +501,8 @@ public class MainActivity extends Activity {
     static final class TableH { List<TextView[]> cells = new ArrayList<>(); }
     static final class HeaderH { TextView big; }
     static final class ChartH { ChartView chart; TextView value; }
+    static final class HBarsH { HBarsView view; TextView head; }
+    static final class HoursH { HoursView view; TextView value; }
 
     /** Длинное значение показывается под названием, а не справа. */
     static boolean stacked(String key, String value) {
@@ -559,6 +563,18 @@ public class MainActivity extends Activity {
                     ChartH ch = (ChartH) h;
                     ch.chart.set(it.series, it.lo, it.hi, it.loLabel, it.hiLabel, color(it.color));
                     setText(ch.value, it.value);
+                    break;
+                }
+                case 8: {
+                    HBarsH hb = (HBarsH) h;
+                    if (hb.head != null && it.value != null) setText(hb.head, it.value);
+                    hb.view.set(it.rows, it.series, color(it.color));
+                    break;
+                }
+                case 9: {
+                    HoursH hh = (HoursH) h;
+                    if (it.value != null) setText(hh.value, it.value);
+                    hh.view.set(it.headers, it.series, it.kinds);
                     break;
                 }
                 case 4: {
@@ -742,6 +758,44 @@ public class MainActivity extends Activity {
                     ChartH ch = new ChartH();
                     ch.chart = cv; ch.value = val;
                     holders.add(ch);
+                    break;
+                }
+                case 8: {
+                    LinearLayout box = new LinearLayout(this);
+                    box.setOrientation(LinearLayout.VERTICAL);
+                    box.setPadding(dp(2), dp(6), 0, dp(8));
+                    HBarsH hb = new HBarsH();
+                    if (it.value != null) {
+                        TextView head = text(it.value, th.text, 16);
+                        head.setTypeface(Typeface.DEFAULT_BOLD);
+                        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(-1, -2);
+                        hl.bottomMargin = dp(6);
+                        box.addView(head, hl);
+                        hb.head = head;
+                    }
+                    HBarsView v = new HBarsView(this, th);
+                    v.set(it.rows, it.series, color(it.color));
+                    box.addView(v, new LinearLayout.LayoutParams(-1, -2));
+                    content.addView(box);
+                    hb.view = v;
+                    holders.add(hb);
+                    break;
+                }
+                case 9: {
+                    LinearLayout box = new LinearLayout(this);
+                    box.setOrientation(LinearLayout.VERTICAL);
+                    box.setPadding(dp(2), dp(6), 0, dp(6));
+                    TextView val = text(it.value == null ? "" : it.value, th.text, 14);
+                    LinearLayout.LayoutParams vl = new LinearLayout.LayoutParams(-1, -2);
+                    vl.bottomMargin = dp(8);
+                    box.addView(val, vl);
+                    HoursView v = new HoursView(this, th);
+                    v.set(it.headers, it.series, it.kinds);
+                    box.addView(v, new LinearLayout.LayoutParams(-1, -2));
+                    content.addView(box);
+                    HoursH hh = new HoursH();
+                    hh.view = v; hh.value = val;
+                    holders.add(hh);
                     break;
                 }
                 default:

@@ -125,6 +125,7 @@ public class EnergyService extends Service {
             s.open = null; // что было между остановкой и стартом — неизвестно
             stats = s;
             ChargeLog.load(this);
+            IdleHistory.load(this);
             IdleNet.load(this); // до HourlyReport.load: тот может начать новый период и обнулить период сети
             HourlyReport.load(this, s);
             ScreenTime.load(this, SystemClock.elapsedRealtime());
@@ -178,6 +179,7 @@ public class EnergyService extends Service {
             if (type == IdleNet.net) return;
             IdleNet.update(SystemClock.elapsedRealtime(), null, type, type == IdleNet.MOBILE ? IdleNet.weakSignal(this) : Boolean.FALSE);
             IdleNet.save(this);
+            IdleHistory.net(SystemClock.elapsedRealtime(), System.currentTimeMillis(), type);
         } catch (Throwable ignored) { }
     }
 
@@ -216,6 +218,8 @@ public class EnergyService extends Service {
             int nt = IdleNet.current(this);
             IdleNet.update(elNow, screen, nt, nt == IdleNet.MOBILE ? IdleNet.weakSignal(this) : Boolean.FALSE);
             IdleNet.save(this);
+            IdleHistory.update(elNow, wallNow, lvl, screen, plugged, nt);
+            IdleHistory.maybeSave(this, elNow);
             if (HourlyReport.overdue(this, wallNow)) hourly(getApplicationContext(), null);
             // тест зарядки в фоне
             double[] r = BatteryMeter.read(this);
@@ -281,6 +285,8 @@ public class EnergyService extends Service {
             ScreenTime.save(this);
             IdleNet.update(SystemClock.elapsedRealtime(), null, null, null);
             IdleNet.save(this);
+            IdleHistory.net(SystemClock.elapsedRealtime(), System.currentTimeMillis(), IdleHistory.lastNet);
+            IdleHistory.save(this);
         } catch (Throwable ignored) { }
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
@@ -299,7 +305,7 @@ public class EnergyService extends Service {
         catch (Throwable ignored) { }
         try { if (netCb != null) ((android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netCb); }
         catch (Throwable ignored) { }
-        try { ScreenTime.save(this); IdleNet.save(this); } catch (Throwable ignored) { }
+        try { ScreenTime.save(this); IdleNet.save(this); IdleHistory.save(this); } catch (Throwable ignored) { }
         super.onDestroy();
     }
 

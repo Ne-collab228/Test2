@@ -103,9 +103,66 @@ final class ScreenTime {
         return c;
     }
 
+    private static TreeMap<Integer, long[]> usageCache;
+    private static long usageT;
+
+    /**
+     * Время экрана по журналу Android (события «экран включён / выключен»), если дан доступ к истории
+     * использования: точнее и не зависит от того, шло ли слежение. null — нет доступа или данных.
+     */
+    static synchronized TreeMap<Integer, long[]> fromUsage(Context ctx, long now) {
+        if (ctx == null) return null;
+        if (usageCache != null && now - usageT < 120_000 && now >= usageT) return usageCache;
+        usageT = now;
+        usageCache = null;
+        try {
+            if (!WakeCauses.hasAccess(ctx)) return null;
+            android.app.usage.UsageStatsManager usm = (android.app.usage.UsageStatsManager) ctx.getSystemService(Context.USAGE_STATS_SERVICE);
+            if (usm == null) return null;
+            long from = nextMidnight(now - KEEP_DAYS * 86_400_000L);
+            android.app.usage.UsageEvents evs = usm.queryEvents(from, now);
+            if (evs == null) return null;
+            android.app.usage.UsageEvents.Event ev = new android.app.usage.UsageEvents.Event();
+            TreeMap<Integer, long[]> m = new TreeMap<>();
+            long on = -1; int seen = 0;
+            while (evs.hasNextEvent()) {
+                evs.getNextEvent(ev);
+                int t = ev.getEventType();
+                if (t == 15) { // SCREEN_INTERACTIVE
+                    seen++;
+                    if (on < 0) {
+                        on = ev.getTimeStamp();
+                        long[] d = m.get(dayKey(on));
+                        if (d == null) { d = new long[2]; m.put(dayKey(on), d); }
+                        d[1]++;
+                    }
+                } else if (t == 16) { // SCREEN_NON_INTERACTIVE
+                    seen++;
+                    if (on >= 0) {
+                        long end = ev.getTimeStamp();
+                        if (end > on) addSpan(m, end, Math.min(end - on, MAX_SPAN_MS));
+                        on = -1;
+                    }
+                }
+            }
+            if (on >= 0 && now > on) addSpan(m, now, Math.min(now - on, MAX_SPAN_MS));
+            if (seen == 0) return null;
+            usageCache = m;
+            return m;
+        } catch (Throwable e) { return null; }
+    }
+
+    /** Лучший источник: журнал Android, иначе свой счётчик. */
+    static TreeMap<Integer, long[]> best(Context ctx, long elapsed, long wall) {
+        TreeMap<Integer, long[]> u = fromUsage(ctx, wall);
+        return u != null ? u : snapshot(elapsed, wall);
+    }
+
     /** Экран за день wall (с идущим отрезком), мс. */
-    static long msOn(long elapsed, long wall, long dayWall) {
-        long[] d = snapshot(elapsed, wall).get(dayKey(dayWall));
+    static long msOn(long elapsed, long wall, long dayWall) { return msOn(null, elapsed, wall, dayWall); }
+
+    static long msOn(Context ctx, long elapsed, long wall, long dayWall) {
+        long[] d = best(ctx, elapsed, wall).get(dayKey(dayWall));
         return d == null ? 0 : d[0];
     }
 
@@ -123,8 +180,10 @@ final class ScreenTime {
     }
 
     /** Строки «день — время (включений)», новые сверху. */
-    static List<String[]> rows(long elapsed, long wall) {
-        TreeMap<Integer, long[]> s = snapshot(elapsed, wall);
+    static List<String[]> rows(long elapsed, long wall) { return rows(null, elapsed, wall); }
+
+    static List<String[]> rows(Context ctx, long elapsed, long wall) {
+        TreeMap<Integer, long[]> s = best(ctx, elapsed, wall);
         List<String[]> out = new ArrayList<>();
         for (Integer k : s.descendingKeySet()) {
             long[] d = s.get(k);
@@ -134,8 +193,10 @@ final class ScreenTime {
     }
 
     /** Среднее за полные прошлые дни (не сегодня), мс; -1 — нет данных. */
-    static long avgPast(long elapsed, long wall) {
-        TreeMap<Integer, long[]> s = snapshot(elapsed, wall);
+    static long avgPast(long elapsed, long wall) { return avgPast(null, elapsed, wall); }
+
+    static long avgPast(Context ctx, long elapsed, long wall) {
+        TreeMap<Integer, long[]> s = best(ctx, elapsed, wall);
         int today = dayKey(wall);
         long sum = 0; int n = 0;
         for (java.util.Map.Entry<Integer, long[]> e : s.entrySet()) if (e.getKey() != today) { sum += e.getValue()[0]; n++; }
@@ -143,8 +204,10 @@ final class ScreenTime {
     }
 
     /** Короткая строка для отчёта: «сегодня 3 ч 10 мин (вкл. 40 раз) · вчера 5 ч 2 мин». */
-    static String summary(long elapsed, long wall) {
-        TreeMap<Integer, long[]> s = snapshot(elapsed, wall);
+    static String summary(long elapsed, long wall) { return summary(null, elapsed, wall); }
+
+    static String summary(Context ctx, long elapsed, long wall) {
+        TreeMap<Integer, long[]> s = best(ctx, elapsed, wall);
         long[] t = s.get(dayKey(wall)), y = s.get(dayKey(wall - 86_400_000L));
         if (t == null && y == null) return null;
         StringBuilder b = new StringBuilder("сегодня ").append(hm(t == null ? 0 : t[0]));
@@ -185,7 +248,7 @@ final class ScreenTime {
     }
 
     static synchronized void reset(Context ctx) {
-        days.clear(); onEl = -1;
+        days.clear(); onEl = -1; usageCache = null; usageT = 0;
         if (ctx != null) ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
     }
 }
